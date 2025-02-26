@@ -43,11 +43,11 @@ jobs:
           REPO_URL="https://github.com/somemoo/OpenWrt-packages"
           BRANCH="lede"
           PKG_ARRAY=()
-          BUILD_FILE_CHANGED=false
+          USE_BUILD_FILE=false
 
-          if git diff HEAD^ HEAD --name-only | grep -q "Build-IPK"; then
-            echo "检测到 Build-IPK 文件变化"
-            BUILD_FILE_CHANGED=true
+          if [ -f "Build-IPK" ]; then
+            echo "检测到 Build-IPK 文件存在"
+            declare -a tmp_pkgs
             while IFS= read -r line; do
               if [[ "$line" =~ ^[[:space:]]*# ]] || [[ -z "${line// }" ]]; then
                 continue
@@ -55,47 +55,35 @@ jobs:
               IFS=',; ' read -ra pkgs <<< "$line"
               for pkg in "${pkgs[@]}"; do
                 clean_pkg=$(echo "$pkg" | xargs)
-                if [ -n "$clean_pkg" ]; then
-                  PKG_ARRAY+=("$clean_pkg")
-                fi
+                [ -n "$clean_pkg" ] && tmp_pkgs+=("$clean_pkg")
               done
             done < Build-IPK
+            if [ ${#tmp_pkgs[@]} -gt 0 ]; then
+              echo "文件内容有效，包含 ${#tmp_pkgs[@]} 个包"
+              if git diff --quiet HEAD^ HEAD -- "Build-IPK" 2>/dev/null; then
+                echo "文件未修改，回退到输入/默认包"
+              else
+                echo "文件已修改，使用文件内容构建"
+                PKG_ARRAY=("${tmp_pkgs[@]}")
+                USE_BUILD_FILE=true
+              fi
+            else
+              echo "::warning::文件内容无效，回退到输入/默认包"
+            fi
           fi
 
           git clone -b $BRANCH --single-branch $REPO_URL OpenWrt-packages
           cd OpenWrt-packages
 
-          if [ "$BUILD_FILE_CHANGED" = true ]; then
-            PKG_ARRAY=($(printf "%s\n" "${PKG_ARRAY[@]}" | sort -u))
-            all_exist=true
-            for pkg in "${PKG_ARRAY[@]}"; do
-              if [ ! -d "$pkg" ]; then
-                echo "::warning::包 '$pkg' 在主仓库不存在，尝试备用仓库..."
-                all_exist=false
-              fi
-            done
-            if [ "$all_exist" = false ]; then
-              cd ..
-              rm -rf OpenWrt-packages
-              REPO_URL="https://github.com/kiddin9/kwrt-packages"
-              BRANCH="main"
-              git clone -b $BRANCH --single-branch $REPO_URL OpenWrt-packages
-              cd OpenWrt-packages
-              all_exist_backup=true
-              for pkg in "${PKG_ARRAY[@]}"; do
-                if [ ! -d "$pkg" ]; then
-                  echo "::error::包 '$pkg' 在备用仓库也不存在"
-                  exit 1
-                fi
-              done
-            fi
-          else
+          if [ "$USE_BUILD_FILE" = false ]; then
             if [ -n "$PACKAGE_INPUT" ]; then
+              echo "使用用户输入包：$PACKAGE_INPUT"
               IFS=',; ' read -ra PKG_ARRAY <<< "$PACKAGE_INPUT"
             else
+              echo "使用默认包搜索策略"
               PKG_ARRAY=($(find . -maxdepth 1 -type d -name 'luci-app-*' -printf '%f\n'))
               if [ ${#PKG_ARRAY[@]} -eq 0 ]; then
-                echo "::warning::主仓库未找到 luci-app-* 包，尝试备用仓库..."
+                echo "::warning::主仓库未找到默认包，尝试备用仓库..."
                 cd ..
                 rm -rf OpenWrt-packages
                 REPO_URL="https://github.com/kiddin9/kwrt-packages"
@@ -105,6 +93,34 @@ jobs:
                 PKG_ARRAY=($(find . -maxdepth 1 -type d -name 'luci-app-*' -printf '%f\n'))
               fi
             fi
+          fi
+
+          if [ ${#PKG_ARRAY[@]} -gt 0 ]; then
+            all_exist=true
+            for pkg in "${PKG_ARRAY[@]}"; do
+              if [ ! -d "$pkg" ]; then
+                echo "::warning::包 '$pkg' 在主仓库不存在，尝试备用仓库..."
+                all_exist=false
+                break
+              fi
+            done
+            if [ "$all_exist" = false ]; then
+              cd ..
+              rm -rf OpenWrt-packages
+              REPO_URL="https://github.com/kiddin9/kwrt-packages"
+              BRANCH="main"
+              git clone -b $BRANCH --single-branch $REPO_URL OpenWrt-packages
+              cd OpenWrt-packages
+              for pkg in "${PKG_ARRAY[@]}"; do
+                if [ ! -d "$pkg" ]; then
+                  echo "::error::包 '$pkg' 在备用仓库也不存在"
+                  exit 1
+                fi
+              done
+            fi
+          else
+            echo "::error::未找到任何有效包"
+            exit 1
           fi
 
           targets_json=$(jq -c -n \
