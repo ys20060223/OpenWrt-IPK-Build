@@ -123,14 +123,12 @@ jobs:
             exit 1
           fi
 
-          targets_json=$(jq -c -n \
-            --argjson arr "$(printf '%s\n' "${PKG_ARRAY[@]}" | jq -R . | jq -s .)" \
-            --arg repo "$REPO_URL" \
-            '{ packages: $arr, repo: $repo }')
-
+          targets_json=$(jq -c -n --argjson arr "$(printf '%s\n' "${PKG_ARRAY[@]}" | jq -R . | jq -s .)" '$arr')
+          
           cd ..
           rm -rf OpenWrt-packages
           echo "matrix=$targets_json" >> $GITHUB_OUTPUT
+          echo "repo_url=$REPO_URL" >> $GITHUB_OUTPUT
 
   build:
     name: 构建 ${{ matrix.target }}-(${{ matrix.arch }})
