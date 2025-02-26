@@ -1,6 +1,6 @@
 # 编译状态
 
-![OpenWrt-IPK-Build](https://github.com/somemoo/OpenWrt-IPK-Build/workflows/OpenWrt-IPK-Build/badge.svg)
+![OpenWrt-IPK-Build](https://github.com/somemoo/openwrt-ipk-build/workflows/openwrt-ipk-build/badge.svg)
 [![](https://img.shields.io/github/license/mashape/apistatus.svg)](https://github.com/somemoo/OpenWrt)
 
 ## 编译注意
