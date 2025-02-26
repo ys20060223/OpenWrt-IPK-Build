@@ -44,16 +44,13 @@ jobs:
           BRANCH="lede"
           PKG_ARRAY=()
           
-          # 分割输入为数组
           if [ -n "$PACKAGE_INPUT" ]; then
               IFS=',; ' read -ra PKG_ARRAY <<< "$PACKAGE_INPUT"
           fi
 
-          # 检查主仓库
           git clone -b $BRANCH --single-branch $REPO_URL OpenWrt-packages
           cd OpenWrt-packages
 
-          # 验证主仓库是否存在所有包
           if [ ${#PKG_ARRAY[@]} -gt 0 ]; then
               all_exist=true
               for pkg in "${PKG_ARRAY[@]}"; do
@@ -63,7 +60,6 @@ jobs:
                   fi
               done
 
-              # 若主仓库不满足，尝试备用仓库
               if [ "$all_exist" = false ]; then
                   cd ..
                   rm -rf OpenWrt-packages
@@ -71,8 +67,6 @@ jobs:
                   BRANCH="main"
                   git clone -b $BRANCH --single-branch $REPO_URL OpenWrt-packages
                   cd OpenWrt-packages
-
-                  # 验证备用仓库
                   all_exist_backup=true
                   for pkg in "${PKG_ARRAY[@]}"; do
                       if [ ! -d "$pkg" ]; then
@@ -82,7 +76,6 @@ jobs:
                   done
               fi
           else
-              # 无输入时查找所有 luci-app-*
               PKG_ARRAY=($(find . -maxdepth 1 -type d -name 'luci-app-*' -printf '%f\n'))
               if [ ${#PKG_ARRAY[@]} -eq 0 ]; then
                   echo "::warning::主仓库未找到任何 luci-app-* 包，尝试备用仓库..."
@@ -96,7 +89,6 @@ jobs:
               fi
           fi
 
-          # 生成 JSON 矩阵
           targets_json=$(jq -c -n --argjson arr "$(printf '%s\n' "${PKG_ARRAY[@]}" | jq -R . | jq -s .)" '$arr')
           
           cd ..
