@@ -42,33 +42,62 @@ jobs:
           PACKAGE_INPUT="${{ github.event.inputs.Package }}"
           REPO_URL="https://github.com/somemoo/OpenWrt-packages"
           BRANCH="lede"
+          PKG_ARRAY=()
           
+          # 分割输入为数组
+          if [ -n "$PACKAGE_INPUT" ]; then
+              IFS=',; ' read -ra PKG_ARRAY <<< "$PACKAGE_INPUT"
+          fi
+
           # 检查主仓库
           git clone -b $BRANCH --single-branch $REPO_URL OpenWrt-packages
           cd OpenWrt-packages
-          
-          if [ -n "$PACKAGE_INPUT" ]; then
-            targets_json=$(echo "$PACKAGE_INPUT" | jq -R -s -c 'gsub("[ ,;]"; ",") | split(",") | map(select(. != ""))')
-            if [ ! -d "$PACKAGE_INPUT" ]; then
-              # 主仓库不存在则尝试备用仓库
-              cd ..
-              rm -rf OpenWrt-packages
-              REPO_URL="https://github.com/kiddin9/kwrt-packages"
-              BRANCH="main"
-              git clone -b $BRANCH --single-branch $REPO_URL OpenWrt-packages
-              cd OpenWrt-packages
-              
-              if [ ! -d "$PACKAGE_INPUT" ]; then
-                echo "::error::包 '$PACKAGE_INPUT' 在以下仓库中均不存在：1. https://github.com/somemoo/OpenWrt-packages 2. https://github.com/kiddin9/kwrt-packages"
-                exit 1
+
+          # 验证主仓库是否存在所有包
+          if [ ${#PKG_ARRAY[@]} -gt 0 ]; then
+              all_exist=true
+              for pkg in "${PKG_ARRAY[@]}"; do
+                  if [ ! -d "$pkg" ]; then
+                      all_exist=false
+                      break
+                  fi
+              done
+
+              # 若主仓库不满足，尝试备用仓库
+              if [ "$all_exist" = false ]; then
+                  cd ..
+                  rm -rf OpenWrt-packages
+                  REPO_URL="https://github.com/kiddin9/kwrt-packages"
+                  BRANCH="main"
+                  git clone -b $BRANCH --single-branch $REPO_URL OpenWrt-packages
+                  cd OpenWrt-packages
+
+                  # 验证备用仓库
+                  all_exist_backup=true
+                  for pkg in "${PKG_ARRAY[@]}"; do
+                      if [ ! -d "$pkg" ]; then
+                          echo "::error::包 '$pkg' 在主仓库和备用仓库中均不存在"
+                          exit 1
+                      fi
+                  done
               fi
-            fi
+          else
+              # 无输入时查找所有 luci-app-*
+              PKG_ARRAY=($(find . -maxdepth 1 -type d -name 'luci-app-*' -printf '%f\n'))
+              if [ ${#PKG_ARRAY[@]} -eq 0 ]; then
+                  echo "::warning::主仓库未找到任何 luci-app-* 包，尝试备用仓库..."
+                  cd ..
+                  rm -rf OpenWrt-packages
+                  REPO_URL="https://github.com/kiddin9/kwrt-packages"
+                  BRANCH="main"
+                  git clone -b $BRANCH --single-branch $REPO_URL OpenWrt-packages
+                  cd OpenWrt-packages
+                  PKG_ARRAY=($(find . -maxdepth 1 -type d -name 'luci-app-*' -printf '%f\n'))
+              fi
           fi
 
-          # 生成目标列表
-          if [ ！ -n "$PACKAGE_INPUT" ]; then
-            targets_json=$(find . -maxdepth 1 -type d -name 'luci-app-*' -printf '%f\n' | jq -R -s -c 'split("\n") | map(select(. != ""))')
-          fi
+          # 生成 JSON 矩阵
+          targets_json=$(jq -c -n --argjson arr "$(printf '%s\n' "${PKG_ARRAY[@]}" | jq -R . | jq -s .)" '$arr')
           
           cd ..
           rm -rf OpenWrt-packages
