@@ -1,6 +1,6 @@
 # 编译状态
 
-![Openwrt-AutoBuild](https://github.com/somemoo/OpenWrt/workflows/Openwrt-Firmware-Build/badge.svg)
+![Openwrt-AutoBuild](https://github.com/somemoo/OpenWrt/workflows/Openwrt-IPK-Build/badge.svg)
 [![](https://img.shields.io/github/license/mashape/apistatus.svg)](https://github.com/somemoo/OpenWrt)
 
 ## 编译注意
@@ -14,8 +14,8 @@ Girhub Actions在线编译Openwrt的插件，使用上游最新源码！
 
 ## 固件截图
 
-![xm1](Pic/2-1.png)
-![xm2](Pic/2-2.png)
+![xm1](Pic/2-1.PNG)
+![xm2](Pic/2-2.PNG)
 
 ## 参考感谢
 
