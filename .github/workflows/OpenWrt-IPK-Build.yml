@@ -43,58 +43,78 @@ jobs:
           REPO_URL="https://github.com/somemoo/OpenWrt-packages"
           BRANCH="lede"
           PKG_ARRAY=()
-          
-          if [ -n "$PACKAGE_INPUT" ]; then
-              IFS=',; ' read -ra PKG_ARRAY <<< "$PACKAGE_INPUT"
+          BUILD_FILE_CHANGED=false
+
+          if git diff HEAD^ HEAD --name-only | grep -q "Build-IPK"; then
+            echo "检测到 Build-IPK 文件变化"
+            BUILD_FILE_CHANGED=true
+            while IFS= read -r line; do
+              if [[ "$line" =~ ^[[:space:]]*# ]] || [[ -z "${line// }" ]]; then
+                continue
+              fi
+              IFS=',; ' read -ra pkgs <<< "$line"
+              for pkg in "${pkgs[@]}"; do
+                clean_pkg=$(echo "$pkg" | xargs)
+                if [ -n "$clean_pkg" ]; then
+                  PKG_ARRAY+=("$clean_pkg")
+                fi
+              done
+            done < Build-IPK
           fi
 
           git clone -b $BRANCH --single-branch $REPO_URL OpenWrt-packages
           cd OpenWrt-packages
 
-          if [ ${#PKG_ARRAY[@]} -gt 0 ]; then
-              all_exist=true
-              for pkg in "${PKG_ARRAY[@]}"; do
-                  if [ ! -d "$pkg" ]; then
-                      all_exist=false
-                      break
-                  fi
-              done
-
-              if [ "$all_exist" = false ]; then
-                  cd ..
-                  rm -rf OpenWrt-packages
-                  REPO_URL="https://github.com/kiddin9/kwrt-packages"
-                  BRANCH="main"
-                  git clone -b $BRANCH --single-branch $REPO_URL OpenWrt-packages
-                  cd OpenWrt-packages
-                  all_exist_backup=true
-                  for pkg in "${PKG_ARRAY[@]}"; do
-                      if [ ! -d "$pkg" ]; then
-                          echo "::error::包 '$pkg' 在主仓库和备用仓库中均不存在"
-                          exit 1
-                      fi
-                  done
+          if [ "$BUILD_FILE_CHANGED" = true ]; then
+            PKG_ARRAY=($(printf "%s\n" "${PKG_ARRAY[@]}" | sort -u))
+            all_exist=true
+            for pkg in "${PKG_ARRAY[@]}"; do
+              if [ ! -d "$pkg" ]; then
+                echo "::warning::包 '$pkg' 在主仓库不存在，尝试备用仓库..."
+                all_exist=false
               fi
+            done
+            if [ "$all_exist" = false ]; then
+              cd ..
+              rm -rf OpenWrt-packages
+              REPO_URL="https://github.com/kiddin9/kwrt-packages"
+              BRANCH="main"
+              git clone -b $BRANCH --single-branch $REPO_URL OpenWrt-packages
+              cd OpenWrt-packages
+              all_exist_backup=true
+              for pkg in "${PKG_ARRAY[@]}"; do
+                if [ ! -d "$pkg" ]; then
+                  echo "::error::包 '$pkg' 在备用仓库也不存在"
+                  exit 1
+                fi
+              done
+            fi
           else
+            if [ -n "$PACKAGE_INPUT" ]; then
+              IFS=',; ' read -ra PKG_ARRAY <<< "$PACKAGE_INPUT"
+            else
               PKG_ARRAY=($(find . -maxdepth 1 -type d -name 'luci-app-*' -printf '%f\n'))
               if [ ${#PKG_ARRAY[@]} -eq 0 ]; then
-                  echo "::warning::主仓库未找到任何 luci-app-* 包，尝试备用仓库..."
-                  cd ..
-                  rm -rf OpenWrt-packages
-                  REPO_URL="https://github.com/kiddin9/kwrt-packages"
-                  BRANCH="main"
-                  git clone -b $BRANCH --single-branch $REPO_URL OpenWrt-packages
-                  cd OpenWrt-packages
-                  PKG_ARRAY=($(find . -maxdepth 1 -type d -name 'luci-app-*' -printf '%f\n'))
+                echo "::warning::主仓库未找到 luci-app-* 包，尝试备用仓库..."
+                cd ..
+                rm -rf OpenWrt-packages
+                REPO_URL="https://github.com/kiddin9/kwrt-packages"
+                BRANCH="main"
+                git clone -b $BRANCH --single-branch $REPO_URL OpenWrt-packages
+                cd OpenWrt-packages
+                PKG_ARRAY=($(find . -maxdepth 1 -type d -name 'luci-app-*' -printf '%f\n'))
               fi
+            fi
           fi
 
-          targets_json=$(jq -c -n --argjson arr "$(printf '%s\n' "${PKG_ARRAY[@]}" | jq -R . | jq -s .)" '$arr')
-          
+          targets_json=$(jq -c -n \
+            --argjson arr "$(printf '%s\n' "${PKG_ARRAY[@]}" | jq -R . | jq -s .)" \
+            --arg repo "$REPO_URL" \
+            '{ packages: $arr, repo: $repo }')
+
           cd ..
           rm -rf OpenWrt-packages
           echo "matrix=$targets_json" >> $GITHUB_OUTPUT
-          echo "repo_url=$REPO_URL" >> $GITHUB_OUTPUT
 
   build:
     name: 构建 ${{ matrix.target }}-(${{ matrix.arch }})
