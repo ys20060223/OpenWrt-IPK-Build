@@ -224,5 +224,5 @@ jobs:
       - name: 上传 ipk
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.model_name }}-${{ env.arch_path }}-${{ matrix.target }}
+          name: ${{ env.model_name }}-${{ env.arch-path }}-${{ matrix.target }}
           path: ${{ env.IPK }}
