@@ -224,7 +224,7 @@ jobs:
       - name: 下载依赖
         id: package
         run: |
-          cd OpenWrt-${{ env.arch_path }}
+          cd OpenWrt-$(echo ${{ env.arch_path }} | tr '/' '-')
           mv -f feeds/base feeds/base.bak
           mv -f feeds/packages feeds/packages.bak
           make defconfig
