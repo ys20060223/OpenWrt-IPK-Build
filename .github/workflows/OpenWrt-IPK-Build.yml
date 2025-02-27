@@ -180,6 +180,13 @@ jobs:
           BRANCH="${{ matrix.branch }}"
           git clone -b "$BRANCH" --depth=1 "$REPO_URL" packages
           mv packages/* package/ && rm -rf packages
+  
+          if [ -f "${{ matrix.target }}" ]; then  
+            chmod +x "${{ matrix.target }}"  
+            /bin/bash ./"${{ matrix.target }}"  
+          else  
+            echo "${{ matrix.target }} 文件不存在，无法执行。"  
+          fi  
           
           ./scripts/feeds update -a
           rm -rf feeds/luci/{applications,collections,protocols,themes,libs,docs,contrib}
