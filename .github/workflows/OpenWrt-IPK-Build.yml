@@ -194,6 +194,7 @@ jobs:
           rm -rf feeds/base/package/kernel/!(cryptodev-linux)
           sed -i '/	refresh_config();/d' scripts/feeds
           
+          ./scripts/feeds update -a
           ./scripts/feeds install ${{ matrix.target }}
           echo "CONFIG_PACKAGE_${{ matrix.target }}=y" >> .config
 
