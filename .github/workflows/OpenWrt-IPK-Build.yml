@@ -23,7 +23,6 @@ jobs:
     if: github.event.repository.owner.id == github.event.sender.id || !github.event.sender.id
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
-      repo_url: ${{ steps.set-matrix.outputs.repo_url }}
       arch: ${{ steps.parse-model.outputs.arch }}
       model_name: ${{ steps.parse-model.outputs.model_name }}
     
@@ -31,11 +30,10 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v4
 
-      - name: 解析设备架构
+      - name: 解析架构
         id: parse-model
         run: |
           MODEL_INPUT="${{ github.event.inputs.Model }}"
-          echo "model_name=$MODEL_INPUT" >> $GITHUB_ENV
           
           if [ ! -f "scripts/Models" ]; then
             echo "::error::架构映射文件 scripts/Models 不存在"
@@ -70,10 +68,12 @@ jobs:
             echo "::error::未找到设备 '$MODEL_INPUT' 对应的架构"
             exit 1
           fi
+          
+          sanitized_model=$(echo "$MODEL_INPUT" | tr ' ' '-')
           echo "arch=$FOUND_ARCH" >> $GITHUB_OUTPUT
-          echo "model_name=$MODEL_INPUT" >> $GITHUB_OUTPUT
+          echo "model_name=$sanitized_model" >> $GITHUB_OUTPUT
 
-      - name: 构建包矩阵
+      - name: 构建矩阵
         id: set-matrix
         env:
           TARGET_ARCH: ${{ steps.parse-model.outputs.arch }}
@@ -81,79 +81,54 @@ jobs:
           PACKAGE_INPUT="${{ github.event.inputs.Package }}"
           MAIN_REPO="https://github.com/somemoo/OpenWrt-packages"
           ALT_REPO="https://github.com/kiddin9/kwrt-packages"
-          BRANCH="lede"
+          MAIN_BRANCH="lede"
+          ALT_BRANCH="main"
           PKG_ARRAY=()
           USE_BUILD_FILE=false
-          REPO_URL="$MAIN_REPO"  # 默认使用主仓库
 
-          # 解析输入的包
           if [ -n "$PACKAGE_INPUT" ]; then
             IFS=',; ' read -ra PKG_ARRAY <<< "$PACKAGE_INPUT"
           elif [ -f "Build-IPK" ]; then
             declare -a tmp_pkgs
             while IFS= read -r line; do
-              if [[ "$line" =~ ^[[:space:]]*# ]] || [[ -z "${line// }" ]]; then
-                continue
-              fi
+              [[ "$line" =~ ^[[:space:]]*# ]] || [[ -z "${line// }" ]] && continue
               IFS=',; ' read -ra pkgs <<< "$line"
               for pkg in "${pkgs[@]}"; do
                 clean_pkg=$(echo "$pkg" | xargs)
                 [ -n "$clean_pkg" ] && tmp_pkgs+=("$clean_pkg")
               done
             done < Build-IPK
-            if [ ${#tmp_pkgs[@]} -gt 0 ]; then
-              PKG_ARRAY=("${tmp_pkgs[@]}")
-              USE_BUILD_FILE=true
-            fi
+            [ ${#tmp_pkgs[@]} -gt 0 ] && PKG_ARRAY=("${tmp_pkgs[@]}") && USE_BUILD_FILE=true
           fi
 
-          # 克隆主仓库并过滤存在的包
-          git clone -b $BRANCH --single-branch $MAIN_REPO OpenWrt-packages
-          cd OpenWrt-packages
-          main_pkgs=()
-          missing_pkgs=()
+          git clone -b $MAIN_BRANCH --depth=1 $MAIN_REPO OpenWrt-packages
+          git clone -b $ALT_BRANCH --depth=1 $ALT_REPO OpenWrt-packages-alt
+
+          declare -a valid_pkgs repo_urls branches
           for pkg in "${PKG_ARRAY[@]}"; do
-            if [ -d "$pkg" ]; then
-              main_pkgs+=("$pkg")
+            if [ -d "OpenWrt-packages/$pkg" ]; then
+              valid_pkgs+=("$pkg")
+              repo_urls+=("$MAIN_REPO")
+              branches+=("$MAIN_BRANCH")
+            elif [ -d "OpenWrt-packages-alt/$pkg" ]; then
+              valid_pkgs+=("$pkg")
+              repo_urls+=("$ALT_REPO")
+              branches+=("$ALT_BRANCH")
             else
-              missing_pkgs+=("$pkg")
+              echo "::warning::跳过不存在的包: $pkg"
             fi
           done
 
-          # 检查备用仓库中的包
-          alt_pkgs=()
-          if [ ${#missing_pkgs[@]} -gt 0 ]; then
-            cd ..
-            git clone -b main --single-branch $ALT_REPO OpenWrt-packages-alt
-            cd OpenWrt-packages-alt
-            for pkg in "${missing_pkgs[@]}"; do
-              if [ -d "$pkg" ]; then
-                alt_pkgs+=("$pkg")
-              fi
-            done
-            cd ..
-          fi
+          [ ${#valid_pkgs[@]} -eq 0 ] && echo "::error::没有有效的包可构建" && exit 1
 
-          # 合并有效包并设置仓库URL
-          final_pkgs=("${main_pkgs[@]}" "${alt_pkgs[@]}")
-          if [ ${#final_pkgs[@]} -eq 0 ]; then
-            echo "::error::所有包均不存在，无法构建"
-            exit 1
-          fi
-
-          # 动态设置仓库URL：如果备用仓库有包则切换
-          if [ ${#alt_pkgs[@]} -gt 0 ]; then
-            REPO_URL="$ALT_REPO"
-          fi
-
-          # 生成构建矩阵
-          targets_json=$(jq -c -n \
-            --argjson arr "$(printf '%s\n' "${final_pkgs[@]}" | jq -R . | jq -s .)" \
+          matrix_json=$(jq -c -n \
+            --argjson pkgs "$(printf '%s\n' "${valid_pkgs[@]}" | jq -R . | jq -s .)" \
+            --argjson urls "$(printf '%s\n' "${repo_urls[@]}" | jq -R . | jq -s .)" \
+            --argjson brchs "$(printf '%s\n' "${branches[@]}" | jq -R . | jq -s .)" \
             --arg arch "$TARGET_ARCH" \
-            '[$arch as $a | $arr[] | {target: ., arch: $a}]')
-          
-          echo "matrix=$targets_json" >> $GITHUB_OUTPUT
-          echo "repo_url=$REPO_URL" >> $GITHUB_OUTPUT
+            '[$arch as $a | range(0; ($pkgs|length)) as $i | {target: $pkgs[$i], repo_url: $urls[$i], branch: $brchs[$i], arch: $a}]')
+
+          echo "matrix=$matrix_json" >> $GITHUB_OUTPUT
 
   build:
     name: 构建 ${{ matrix.target }}
@@ -164,7 +139,6 @@ jobs:
         include: ${{ fromJson(needs.matrix.outputs.matrix) }}
       fail-fast: false
     env:
-      REPO_URL: ${{ needs.matrix.outputs.repo_url }}
       arch_path: ${{ needs.matrix.outputs.arch }}
       model_name: ${{ needs.matrix.outputs.model_name }}
 
@@ -192,31 +166,27 @@ jobs:
 
       - name: 克隆项目
         run: |
-          shopt -s extglob
-          cp -rf App/. OpenWrt-$(echo ${{ env.arch_path }} | tr '/' '-')/
           cd OpenWrt-$(echo ${{ env.arch_path }} | tr '/' '-')
+          cp -rf ../App/. .
+
+          REPO_URL="${{ matrix.repo_url }}"
+          BRANCH="${{ matrix.branch }}"
+          git clone -b "$BRANCH" --depth=1 "$REPO_URL" packages
+          mv packages/* package/
+          rm -rf packages
+
           ./scripts/feeds update -a
-          rm -Rf feeds/luci/{applications,collections,protocols,themes,libs,docs,contrib}
-          rm -Rf feeds/luci/modules/!(luci-base)
-          rm -Rf feeds/packages/!(lang|libs|devel|utils|net|multimedia)
-          rm -Rf feeds/packages/multimedia/!(gstreamer1|ffmpeg)
-          rm -Rf feeds/packages/net/!(mosquitto|curl)
-          rm -Rf feeds/base/package/firmware
-          rm -Rf feeds/base/package/network/!(services|utils)
-          rm -Rf feeds/base/package/network/services/!(ppp)
-          rm -Rf feeds/base/package/system/!(opkg|ubus|uci|ca-certificates)
-          rm -Rf feeds/base/package/kernel/!(cryptodev-linux)
+          rm -rf feeds/luci/{applications,collections,protocols,themes,libs,docs,contrib}
+          rm -rf feeds/luci/modules/!(luci-base)
+          rm -rf feeds/packages/!(lang|libs|devel|utils|net|multimedia)
+          rm -rf feeds/packages/multimedia/!(gstreamer1|ffmpeg)
+          rm -rf feeds/packages/net/!(mosquitto|curl)
+          rm -rf feeds/base/package/firmware
+          rm -rf feeds/base/package/network/!(services|utils)
+          rm -rf feeds/base/package/network/services/!(ppp)
+          rm -rf feeds/base/package/system/!(opkg|ubus|uci|ca-certificates)
+          rm -rf feeds/base/package/kernel/!(cryptodev-linux)
           sed -i '/	refresh_config();/d' scripts/feeds
-          
-          if [[ "$REPO_URL" == *"kiddin9"* ]]; then
-            git clone -b main $REPO_URL packages
-            mv packages/* package/
-            rm -rf {packages,.github,.gitignore,LICENSE,README.md}
-          else
-            git clone -b lede $REPO_URL packages 
-            mv packages/* package/
-            rm -rf {packages,package/golang}
-          fi
           
           ./scripts/feeds install ${{ matrix.target }}
           echo "CONFIG_PACKAGE_${{ matrix.target }}=y" >> .config
