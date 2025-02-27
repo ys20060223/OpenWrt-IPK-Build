@@ -222,6 +222,16 @@ jobs:
           ./scripts/feeds install ${{ matrix.target }}
           echo "CONFIG_PACKAGE_${{ matrix.target }}=y" >> .config
 
+      - name: 下载依赖
+        id: package
+        run: |
+          cd OpenWrt-${{ env.arch_path }}
+          mv -f feeds/base feeds/base.bak
+          mv -f feeds/packages feeds/packages.bak
+          make defconfig
+          mv -f feeds/packages.bak feeds/packages
+          mv -f feeds/base.bak feeds/base
+      
       - name: 开始编译
         run: |
           cd OpenWrt-$(echo ${{ env.arch_path }} | tr '/' '-')
