@@ -236,8 +236,16 @@ jobs:
           cd OpenWrt-$(echo ${{ env.arch_path }} | tr '/' '-')
           make package/${{ matrix.target }}/compile -j$(nproc) V=s
 
+      - name: 准备 ipk
+        run: |
+          cd OpenWrt-$(echo ${{ env.arch_path }} | tr '/' '-')
+          mkdir -p ./artifact/IPK
+          find ./bin/packages/*/*/ -maxdepth 1 -type f -name "*.ipk" | xargs -i mv -f {} ./artifact/IPK/
+          cd ./artifact/IPK
+          echo "IPK=$PWD" >> $GITHUB_ENV    
+      
       - name: 上传 ipk
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.model_name }}-${{ env.arch_path }}-${{ matrix.target }}
-          path: OpenWrt-$(echo ${{ env.arch_path }} | tr '/' '-')/bin/packages/*/*/${{ matrix.target }}*.ipk
+          path: ${{ env.IPK }}
