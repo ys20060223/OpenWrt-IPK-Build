@@ -6,7 +6,7 @@ on:
       Model:
         description: '选择设备（自动解析架构）'
         required: true
-        default: '迷你主机'
+        default: 'Mini PC'
         type: choice
         options: ['General PC', 'Mini PC', 'Proxmox VE VM', 'VMware VM', 'Xiaomi 4A Gigabit Edition', 'Xiaomi R4A', 'Redmi AX6', 'Redmi AX6000', 'Xiaomi AX3600', 'Xiaomi AX9000', 'ASUS RT-ACRH17', 'ASUS RT-AC58U', 'ASUS RT-AX86U', 'ASUS RT-AX88U', 'Netgear R7800', 'Netgear XR500', 'Netgear WAX202', 'Linksys WRT1900ACS', 'Linksys WRT3200ACM', 'Linksys EA7500v2', 'GL.iNet MT1300', 'GL.iNet AX1800', 'Phicomm K3', 'Newifi D2', 'HiWiFi HC5962', 'Raspberry Pi 4B']
       Package:
