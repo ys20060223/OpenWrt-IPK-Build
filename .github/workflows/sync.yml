@@ -11,92 +11,119 @@ jobs:
     env:
       MAX_RETRIES: 3
     steps:
-      # ------------------------- 初始化阶段 -------------------------
+      # ====================== 初始化阶段 ======================
       - name: 检出代码
         uses: actions/checkout@v4
         with:
-          fetch-depth: 2  # 启用增量更新所需的历史记录 
+          fetch-depth: 2
+          persist-credentials: false  # 避免权限残留问题
 
-      # ------------------------- 数据同步阶段 -------------------------
+      # ====================== 数据同步阶段 ======================
+      - name: 安装依赖工具
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y html2text pandoc  # 确保文本转换工具可用
+
       - name: 同步官方列表
         run: |
-          # 保留原始注释 (方案1要求)
+          set -euo pipefail  # 严格错误检测
+          
+          # 保留原始注释
           grep '^#' scripts/Models > models_comments || true
           grep '^#' scripts/Archs > archs_comments || true
 
-          # 从官网抓取最新设备列表 (更新源)
+          # 获取设备列表（改进版）
           curl -s https://openwrt.org/supported_devices |
-            awk '/<table class="device-list">/,/<\/table>/ {print}' |
-            html2text -width 1000 |
-            sed -n '/^| Model/,/^$/p' > scripts/Models.new
+            awk '/<table class="device-list">/,/<\/table>/' |
+            pandoc -f html -t markdown |  # 替代html2text以获得更好兼容性
+            sed -n '/^| Model/,/^$/p' |
+            awk -F'|' 'NR>2 {gsub(/ /,"",$2); gsub(/ /,"",$3); print $2 ":" $3}' > scripts/Models.new
           
-          # 抓取架构列表 (新增版本过滤)
+          # 获取架构列表（改进版）
           curl -s https://openwrt.org/architectures |
-            grep -Eo '([a-z0-9]+/[a-z0-9_]+)-23.05.3' | # 限定23.05稳定版
-            sed 's/-23.05.3//' |
+            grep -Po '(?<=<code>)\w+/\S+(?=</code>)' |  # 更精准的正则匹配
             sort -u > scripts/Archs.new
 
-          # 合并注释与新数据
+          # 合并数据并清理临时文件
           cat models_comments scripts/Models.new > scripts/Models
           cat archs_comments scripts/Archs.new > scripts/Archs
+          rm -f *.new *_comments
 
-      # ------------------------- 校验阶段 ------------------------- 
-      - name: 格式校验
+      # ====================== 格式处理阶段 ======================
+      - name: 统一文件格式
         run: |
-          # 设备列表正则校验
-          if ! grep -qE '^[^:]+:[^:]+' scripts/Models; then
-            echo "::error::Models文件格式错误：未找到冒号分隔符"
-            exit 1
-          fi
+          # 处理Archs文件
+          sed -i -E '
+            s/[[:space:]]+/ /g;     # 合并连续空格
+            s/[;,]/ /g;             # 替换分隔符
+            s/[[:blank:]]+$//;      # 删除行尾空白
+            /^[[:space:]]*$/d;      # 删除空行
+            /^#/! s/([^/]+)\/(\S+)/\L\1\/\L\2/  # 强制小写转换
+          ' scripts/Archs
 
-          # 架构格式校验
-          if grep -qE '[^/]/[^/ ]+' scripts/Archs; then
-            echo "::error::Archs文件包含非法架构格式"
-            exit 1
-          fi
+          # 处理Models文件
+          sed -i -E '
+            s/[[:space:]]*:[[:space:]]*/:/;    # 统一冒号格式
+            s/[^:]+:([^/]+)\/(\S+)/\L&/        # 架构部分转小写
+          ' scripts/Models
 
-      - name: 兼容性测试
-        uses: docker://ghcr.io/openwrt/sdk:x86_64-23.05.3  # 修正镜像源
+      # ====================== 验证阶段 ======================
+      - name: 架构格式校验
+        run: |
+          error_log=$(mktemp)
+          while IFS= read -r line; do
+            [[ "$line" =~ ^# ]] && continue
+            IFS=' ' read -ra archs <<< "$line"
+            for arch in "${archs[@]}"; do
+              if [[ ! "$arch" =~ ^[a-z0-9_-]+\/[a-z0-9_-]+$ ]]; then
+                echo "::error file=scripts/Archs,line=$(grep -n "$line" scripts/Archs | cut -d: -f1)::非法架构格式 '$arch'"
+                touch $error_log
+              fi
+            done
+          done < scripts/Archs
+          [ -s $error_log ] && exit 1
+
+      - name: 模型映射验证
+        run: |
+          invalid_count=0
+          while IFS=: read -r model arch; do
+            [[ "$model" =~ ^# ]] && continue
+            if ! grep -qwF "$arch" scripts/Archs; then
+              echo "::error file=scripts/Models,line=$(grep -n "$model:$arch" scripts/Models | cut -d: -f1)::设备 '$model' 映射到未声明的架构 '$arch'"
+              ((invalid_count++))
+            fi
+          done < scripts/Models
+          [ $invalid_count -gt 0 ] && exit 1
+
+      # ====================== 构建验证 ======================
+      - name: SDK兼容性测试
+        uses: docker://ghcr.io/openwrt/sdk:latest
         with:
           args: |
-            # 验证设备-架构映射
-            while IFS=: read -r model arch; do
-              [[ "$arch" =~ ^# ]] && continue # 跳过注释行
-              if ! grep -qxF "$arch" /github/workspace/scripts/Archs; then
-                echo "::error::设备 $model 映射到无效架构 $arch"
-                exit 1
-              fi
-            done < /github/workspace/scripts/Models
+            echo "验证编译环境..."
+            ./scripts/feeds update -a
+            ./scripts/feeds install -a
+            make defconfig
+            echo "基本配置验证通过"
 
-      # ------------------------- 增量提交阶段 ------------------------- 
-      - name: 检测变更
-        id: changes
-        run: |
-          changed_files=$(git diff --ignore-matching-lines='^#' HEAD^ HEAD -- scripts/ | wc -l)
-          echo "changed=$([ $changed_files -gt 0 ] && echo 'true' || echo 'false')" >> $GITHUB_OUTPUT
-
+      # ====================== 版本管理 ======================
       - name: 提交变更
-        if: steps.changes.outputs.changed == 'true'
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "chore: 同步OpenWrt列表 (增量更新)"
+          commit_message: "chore: 自动同步列表 ($(date +%Y%m%d))"
           file_pattern: scripts/
           skip_fetch: true
+          commit_user_name: OpenWrt Sync Bot
+          commit_user_email: sync-bot@openwrt.org
 
-      # ------------------------- 版本管理阶段 ------------------------- 
-      - name: 创建版本快照
-        if: steps.changes.outputs.changed == 'true'
+      - name: 打标签
+        if: success()
         run: |
-          current_date=$(date +%Y%m%d)
-          git tag sync-$current_date
-          git push origin --tags
+          current_tag="sync-$(date +%Y%m%d)"
+          git tag $current_tag
+          git push origin $current_tag
 
-      - name: 清理旧版本
+      - name: 清理旧标签
         run: |
-          # 保留最近5个版本 (优化存储)
-          git tag -l 'sync-*' --sort=-creatordate | tail -n +6 | xargs -I {} git push origin --delete {}
-
-      - name: 清理工作流日志
-        if: always()
-        run: |
-          gh run delete $(gh run list --workflow=sync.yml --limit 1 --json databaseId -q '.[0].databaseId')
+          keep_tags=5
+          git tag -l 'sync-*' --sort=-creatordate | tail -n +$(($keep_tags+1)) | xargs -I {} git push origin --delete {}
