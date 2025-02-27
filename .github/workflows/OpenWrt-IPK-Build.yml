@@ -172,6 +172,7 @@ jobs:
 
       - name: 克隆项目
         run: |
+          shopt -s extglob
           cd OpenWrt-${{ env.arch-path }}
           cp -rf ../App/. .
 
