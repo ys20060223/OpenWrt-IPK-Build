@@ -3,6 +3,36 @@
 # - 冒号右侧为单个架构
 # - 示例：设备1,设备2: target/subtarget
 # 格式：设备列表:架构（支持多设备单行）
-小米路由器4A,Redmi-AX6: ipq40xx/generic
-Xiaomi-AC2100: ramips/mt7621
-华为;H3C MSR2600: sunxi/cortexa7
+# 格式说明：设备列表:架构 (支持多设备单行)
+
+#PC系列
+普通PC,迷你主机,Proxmox VE虚拟机,VMware虚拟机: x86/64
+
+# 小米系列
+小米路由器4A千兆版,Xiaomi R4A: ramips/mt7621
+Redmi AX6,Redmi AX6000: ipq807x/generic
+小米AX3600,Xiaomi AX9000: ipq807x/generic
+
+# 华硕系列
+ASUS RT-ACRH17,ASUS RT-AC58U: ipq40xx/generic
+ASUS RT-AX86U,ASUS RT-AX88U: bcm4908/generic
+
+# 网件系列
+Netgear R7800,Netgear XR500: ipq806x/generic
+Netgear WAX202: ath79/generic
+
+# Linksys系列
+Linksys WRT1900ACS,Linksys WRT3200ACM: mvebu/cortexa9
+Linksys EA7500v2: mediatek/mt7621
+
+# GL.iNet系列
+GL.iNet MT1300: ramips/mt7621
+GL.iNet AX1800: ipq60xx/generic
+
+# 其他品牌
+斐讯K3: bcm53xx/generic
+Newifi D2: ramips/mt7621
+极路由4 HC5962: ramips/mt7621
+
+# 树莓派系列
+Raspberry Pi 4B: bcm27xx/bcm2711
