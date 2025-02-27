@@ -79,10 +79,12 @@ jobs:
           TARGET_ARCH: ${{ steps.parse-model.outputs.arch }}
         run: |
           PACKAGE_INPUT="${{ github.event.inputs.Package }}"
-          REPO_URL="https://github.com/somemoo/OpenWrt-packages"
+          MAIN_REPO="https://github.com/somemoo/OpenWrt-packages"
+          ALT_REPO="https://github.com/kiddin9/kwrt-packages"
           BRANCH="lede"
           PKG_ARRAY=()
-          
+          USE_BUILD_FILE=false
+
           if [ -n "$PACKAGE_INPUT" ]; then
             IFS=',; ' read -ra PKG_ARRAY <<< "$PACKAGE_INPUT"
           elif [ -f "Build-IPK" ]; then
@@ -99,10 +101,11 @@ jobs:
             done < Build-IPK
             if [ ${#tmp_pkgs[@]} -gt 0 ]; then
               PKG_ARRAY=("${tmp_pkgs[@]}")
+              USE_BUILD_FILE=true
             fi
           fi
 
-          git clone -b $BRANCH --single-branch $REPO_URL OpenWrt-packages
+          git clone -b $BRANCH --single-branch $MAIN_REPO OpenWrt-packages
           cd OpenWrt-packages
 
           filtered_pkgs=()
@@ -116,10 +119,8 @@ jobs:
           done
 
           if [ ${#missing_pkgs[@]} -gt 0 ]; then
-            cd ../..
-            REPO_URL="https://github.com/kiddin9/kwrt-packages"
-            BRANCH="main"
-            git clone -b $BRANCH --single-branch $REPO_URL OpenWrt-packages-alt
+            cd ..
+            git clone -b main --single-branch $ALT_REPO OpenWrt-packages-alt
             cd OpenWrt-packages-alt
             for pkg in "${missing_pkgs[@]}"; do
               if [ -d "$pkg" ]; then
@@ -139,8 +140,9 @@ jobs:
             --argjson arr "$(printf '%s\n' "${PKG_ARRAY[@]}" | jq -R . | jq -s .)" \
             --arg arch "$TARGET_ARCH" \
             '[$arch as $a | $arr[] | {target: ., arch: $a}]')
+          
           echo "matrix=$targets_json" >> $GITHUB_OUTPUT
-          echo "repo_url=$REPO_URL" >> $GITHUB_OUTPUT
+          echo "repo_url=$MAIN_REPO" >> $GITHUB_OUTPUT
 
   build:
     name: 构建 ${{ matrix.target }} (${{ needs.matrix.outputs.arch }})
