@@ -168,7 +168,7 @@ jobs:
           SDK_URL1="https://downloads.immortalwrt.org/releases/24.10-SNAPSHOT/targets/${{ env.arch_path }}/immortalwrt-sdk-24.10-SNAPSHOT-${{ env.arch-path }}_gcc-13.3.0_musl.Linux-x86_64.tar.zst"
           SDK_URL2="https://downloads.immortalwrt.org/releases/24.10-SNAPSHOT/targets/${{ env.arch_path }}/immortalwrt-sdk-24.10-SNAPSHOT-${{ env.arch-path }}_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst"
           wget --spider -q "$SDK_URL1" && wget "$SDK_URL1" || wget "$SDK_URL2"
-          mkdir OpenWrt-$(echo ${{ env.arch_path }} | tr '/' '-') && tar -I 'zstd -d' -xf immortalwrt-*.tar.zst -C OpenWrt-$(echo ${{ env.arch_path }} | tr '/' '-') --strip-components 1 && rm immortalwrt-*.tar.zst
+          mkdir OpenWrt-${{ env.arch-path }} && tar -I 'zstd -d' -xf immortalwrt-*.tar.zst -C OpenWrt-${{ env.arch-path }} --strip-components 1 && rm immortalwrt-*.tar.zst
 
       - name: 克隆项目
         run: |
@@ -178,8 +178,7 @@ jobs:
           REPO_URL="${{ matrix.repo_url }}"
           BRANCH="${{ matrix.branch }}"
           git clone -b "$BRANCH" --depth=1 "$REPO_URL" packages
-          mv packages/* package/
-          rm -rf packages
+          mv packages/* package/ && rm -rf packages
 
           ./scripts/feeds update -a
           rm -rf feeds/luci/{applications,collections,protocols,themes,libs,docs,contrib}
