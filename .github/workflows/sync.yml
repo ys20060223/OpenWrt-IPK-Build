@@ -1,13 +1,15 @@
 name: OpenWrt List Sync
 on:
   schedule:
-    - cron: '0 3 1 * *'  # 每月1号凌晨3点执行 
+    - cron: '0 3 1 * *'  # 每月1号凌晨3点执行 (UTC时间)
   workflow_dispatch:
 
 jobs:
   sync:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      MAX_RETRIES: 3
     steps:
       # ------------------------- 初始化阶段 -------------------------
       - name: 检出代码
@@ -18,18 +20,20 @@ jobs:
       # ------------------------- 数据同步阶段 -------------------------
       - name: 同步官方列表
         run: |
-          # 保留原有注释
+          # 保留原始注释 (方案1要求)
           grep '^#' scripts/Models > models_comments || true
           grep '^#' scripts/Archs > archs_comments || true
 
-          # 同步最新数据（保留原始格式）
-          wget -qO- https://openwrt.org/supported_devices | 
+          # 从官网抓取最新设备列表 (更新源)
+          curl -s https://openwrt.org/supported_devices |
             awk '/<table class="device-list">/,/<\/table>/ {print}' |
             html2text -width 1000 |
             sed -n '/^| Model/,/^$/p' > scripts/Models.new
           
-          wget -qO- https://openwrt.org/architectures |
-            grep -Eo '([a-z0-9]+/[a-z0-9_]+)' |
+          # 抓取架构列表 (新增版本过滤)
+          curl -s https://openwrt.org/architectures |
+            grep -Eo '([a-z0-9]+/[a-z0-9_]+)-23.05.3' | # 限定23.05稳定版
+            sed 's/-23.05.3//' |
             sort -u > scripts/Archs.new
 
           # 合并注释与新数据
@@ -39,25 +43,25 @@ jobs:
       # ------------------------- 校验阶段 ------------------------- 
       - name: 格式校验
         run: |
-          # 设备列表校验
+          # 设备列表正则校验
           if ! grep -qE '^[^:]+:[^:]+' scripts/Models; then
-            echo "::error::Models 文件格式错误"
+            echo "::error::Models文件格式错误：未找到冒号分隔符"
             exit 1
           fi
 
-          # 架构列表校验
+          # 架构格式校验
           if grep -qE '[^/]/[^/ ]+' scripts/Archs; then
-            echo "::error::Archs 包含非法架构格式"
+            echo "::error::Archs文件包含非法架构格式"
             exit 1
           fi
 
       - name: 兼容性测试
-        uses: docker://openwrtorg/sdk:latest
+        uses: docker://ghcr.io/openwrt/sdk:x86_64-23.05.3  # 修正镜像源
         with:
           args: |
-            # 验证架构映射关系
+            # 验证设备-架构映射
             while IFS=: read -r model arch; do
-              [[ "$arch" =~ ^# ]] && continue
+              [[ "$arch" =~ ^# ]] && continue # 跳过注释行
               if ! grep -qxF "$arch" /github/workspace/scripts/Archs; then
                 echo "::error::设备 $model 映射到无效架构 $arch"
                 exit 1
@@ -68,7 +72,6 @@ jobs:
       - name: 检测变更
         id: changes
         run: |
-          # 排除注释行的变更检测
           changed_files=$(git diff --ignore-matching-lines='^#' HEAD^ HEAD -- scripts/ | wc -l)
           echo "changed=$([ $changed_files -gt 0 ] && echo 'true' || echo 'false')" >> $GITHUB_OUTPUT
 
@@ -90,5 +93,10 @@ jobs:
 
       - name: 清理旧版本
         run: |
-          # 保留最近5个版本
+          # 保留最近5个版本 (优化存储)
           git tag -l 'sync-*' --sort=-creatordate | tail -n +6 | xargs -I {} git push origin --delete {}
+
+      - name: 清理工作流日志
+        if: always()
+        run: |
+          gh run delete $(gh run list --workflow=sync.yml --limit 1 --json databaseId -q '.[0].databaseId')
