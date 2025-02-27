@@ -27,12 +27,13 @@ jobs:
     
     steps:
       - name: 检出代码
-        uses: actions/checkout@main
+        uses: actions/checkout@v4
 
       - name: 解析设备架构
         id: parse-model
         run: |
-          MODEL_INPUT="${{ github.event.inputs.Model }}" >> $GITHUB_OUTPUT
+          MODEL_INPUT="${{ github.event.inputs.Model }}"
+          echo "选中的设备: $MODEL_INPUT"
           
           # 读取 Models 文件
           if [ ! -f "scripts/Models" ]; then
@@ -53,8 +54,8 @@ jobs:
               continue
             fi
             
-            devices=$(echo "${parts[0]}" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-            target_arch=$(echo "${parts[1]}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            devices=$(echo "${parts}" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            target_arch=$(echo "${parts}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             
             # 检查设备匹配
             while read -r device; do
@@ -90,7 +91,13 @@ jobs:
           BRANCH="lede"
           PKG_ARRAY=()
           USE_BUILD_FILE=false
-          if [ -f "Build-IPK" ]; then
+
+          # 优先处理用户输入
+          if [ -n "$PACKAGE_INPUT" ]; then
+            echo "检测到用户输入包，忽略 Build-IPK 文件"
+            IFS=',; ' read -ra PKG_ARRAY <<< "$PACKAGE_INPUT"
+            USE_BUILD_FILE=false
+          elif [ -f "Build-IPK" ]; then
             echo "检测到 Build-IPK 文件存在"
             declare -a tmp_pkgs
             while IFS= read -r line; do
@@ -106,23 +113,21 @@ jobs:
             if [ ${#tmp_pkgs[@]} -gt 0 ]; then
               echo "文件内容有效，包含 ${#tmp_pkgs[@]} 个包"
               if git diff --quiet HEAD^ HEAD -- "Build-IPK" 2>/dev/null; then
-                echo "文件未修改，回退到输入/默认包"
+                echo "文件未修改，回退到默认包"
               else
                 echo "文件已修改，使用文件内容构建"
                 PKG_ARRAY=("${tmp_pkgs[@]}")
                 USE_BUILD_FILE=true
               fi
             else
-              echo "::warning::文件内容无效，回退到输入/默认包"
+              echo "::warning::文件内容无效，回退到默认包"
             fi
           fi
+
           git clone -b $BRANCH --single-branch $REPO_URL OpenWrt-packages
           cd OpenWrt-packages
           if [ "$USE_BUILD_FILE" = false ]; then
-            if [ -n "$PACKAGE_INPUT" ]; then
-              echo "使用用户输入包：$PACKAGE_INPUT"
-              IFS=',; ' read -ra PKG_ARRAY <<< "$PACKAGE_INPUT"
-            else
+            if [ ${#PKG_ARRAY[@]} -eq 0 ]; then
               echo "使用默认包搜索策略"
               PKG_ARRAY=($(find . -maxdepth 1 -type d -name 'luci-app-*' -printf '%f\n'))
               if [ ${#PKG_ARRAY[@]} -eq 0 ]; then
@@ -164,7 +169,6 @@ jobs:
             echo "::error::未找到任何有效包"
             exit 1
           fi
-          #targets_json=$(jq -c -n --argjson arr "$(printf '%s\n' "${PKG_ARRAY[@]}" | jq -R . | jq -s .)" '$arr')
           targets_json=$(jq -c -n \
             --argjson arr "$(printf '%s\n' "${PKG_ARRAY[@]}" | jq -R . | jq -s .)" \
             --arg arch "$TARGET_ARCH" \
@@ -174,6 +178,7 @@ jobs:
           rm -rf OpenWrt-packages
           echo "matrix=$targets_json" >> $GITHUB_OUTPUT
           echo "repo_url=$REPO_URL" >> $GITHUB_OUTPUT
+
   build:
     name: 构建 ${{ matrix.target }} (${{ matrix.arch }})
     runs-on: ubuntu-latest
@@ -204,17 +209,20 @@ jobs:
           sudo timedatectl set-timezone "Asia/Shanghai"
           git clone --depth=1 https://github.com/openwrt-dev/po2lmo
           (cd po2lmo && sudo make && sudo make install)
+
       - name: 设置变量
         id: ENV
         run: |
           echo "date=$(date +'%m.%d')" >> $GITHUB_ENV
           echo "arch_path=$(echo ${{ matrix.arch }} | tr '/' '-')" >> $GITHUB_ENV
+
       - name: 准备SDK
         run: |
           SDK_URL1="https://downloads.immortalwrt.org/releases/24.10-SNAPSHOT/targets/${{ matrix.arch }}/immortalwrt-sdk-24.10-SNAPSHOT-${{ env.arch_path }}_gcc-13.3.0_musl.Linux-x86_64.tar.zst"
           SDK_URL2="https://downloads.immortalwrt.org/releases/24.10-SNAPSHOT/targets/${{ matrix.arch }}/immortalwrt-sdk-24.10-SNAPSHOT-${{ env.arch_path }}_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst"
           wget --spider -q "$SDK_URL1" && wget "$SDK_URL1" || wget "$SDK_URL2"
           mkdir OpenWrt-${{ env.arch_path }} && tar -I 'zstd -d' -xf immortalwrt-*.tar.zst -C OpenWrt-${{ env.arch_path }} --strip-components 1 && rm immortalwrt-*.tar.zst
+
       - name: 克隆项目
         run: |
           shopt -s extglob
@@ -233,7 +241,6 @@ jobs:
           rm -Rf feeds/base/package/kernel/!(cryptodev-linux)
           sed -i '/	refresh_config();/d' scripts/feeds
           
-          # 根据仓库类型处理路径
           if [[ "$REPO_URL" == *"kiddin9"* ]]; then
             git clone -b main $REPO_URL packages
             mv packages/* package/
@@ -253,6 +260,7 @@ jobs:
             echo "::error::包 ${{ matrix.target }} 最终不存在于仓库中"
             exit 1
           fi
+
       - name: 下载依赖
         id: package
         run: |
@@ -262,10 +270,12 @@ jobs:
           make defconfig
           mv -f feeds/packages.bak feeds/packages
           mv -f feeds/base.bak feeds/base
+
       - name: 开始编译
         run: |
           cd OpenWrt-${{ env.arch_path }}
           make package/${{ matrix.target }}/compile -j$(nproc) V=s
+
       - name: 准备 ipk
         run: |
           cd OpenWrt-${{ env.arch_path }}
@@ -273,6 +283,7 @@ jobs:
           find ./bin/packages/*/*/ -maxdepth 1 -type f -name "*.ipk" | xargs -i mv -f {} ./artifact/IPK/
           cd ./artifact/IPK
           echo "IPK=$PWD" >> $GITHUB_ENV
+
       - name: 上传 ipk
         uses: actions/upload-artifact@v4
         id: upipk
