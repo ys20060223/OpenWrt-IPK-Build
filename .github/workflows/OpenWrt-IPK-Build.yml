@@ -175,11 +175,6 @@ jobs:
           cd OpenWrt-${{ env.arch-path }}
           cp -rf ../App/. .
 
-          REPO_URL="${{ matrix.repo_url }}"
-          BRANCH="${{ matrix.branch }}"
-          git clone -b "$BRANCH" --depth=1 "$REPO_URL" packages
-          mv packages/* package/ && rm -rf packages
-
           ./scripts/feeds update -a
           rm -rf feeds/luci/{applications,collections,protocols,themes,libs,docs,contrib}
           rm -rf feeds/luci/modules/!(luci-base)
@@ -192,6 +187,11 @@ jobs:
           rm -rf feeds/base/package/system/!(opkg|ubus|uci|ca-certificates)
           rm -rf feeds/base/package/kernel/!(cryptodev-linux)
           sed -i '/	refresh_config();/d' scripts/feeds
+
+          REPO_URL="${{ matrix.repo_url }}"
+          BRANCH="${{ matrix.branch }}"
+          git clone -b "$BRANCH" --depth=1 "$REPO_URL" packages
+          mv packages/* package/ && rm -rf packages
           
           ./scripts/feeds update -a
           ./scripts/feeds install ${{ matrix.target }}
