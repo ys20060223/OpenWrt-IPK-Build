@@ -30,9 +30,9 @@ GL.iNet MT1300: ramips/mt7621
 GL.iNet AX1800: ipq60xx/generic
 
 # 其他品牌
-斐讯K3: bcm53xx/generic
+Phicomm K3: bcm53xx/generic
 Newifi D2: ramips/mt7621
-极路由4 HC5962: ramips/mt7621
+HiWiFi HC5962: ramips/mt7621
 
 # 树莓派系列
 Raspberry Pi 4B: bcm27xx/bcm2711
