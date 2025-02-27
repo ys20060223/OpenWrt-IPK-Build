@@ -131,7 +131,7 @@ jobs:
           echo "matrix=$matrix_json" >> $GITHUB_OUTPUT
 
   build:
-    name: 构建 ${{ matrix.target }} (${{ env.model_name }})
+    name: 构建 ${{ matrix.target }} (${{ needs.matrix.outputs.model_name }})
     runs-on: ubuntu-latest
     needs: matrix
     strategy:
@@ -157,16 +157,22 @@ jobs:
           git clone --depth=1 https://github.com/openwrt-dev/po2lmo
           (cd po2lmo && sudo make && sudo make install)
 
+      - name: 设置变量
+        id: ENV
+        run: |
+          echo "date=$(date +'%m.%d')" >> $GITHUB_ENV
+          echo "arch-path=$(echo ${{ env.arch_path }} | tr '/' '-')" >> $GITHUB_ENV
+
       - name: 准备SDK
         run: |
-          SDK_URL1="https://downloads.immortalwrt.org/releases/24.10-SNAPSHOT/targets/${{ env.arch_path }}/immortalwrt-sdk-24.10-SNAPSHOT-$(echo ${{ env.arch_path }} | tr '/' '-')_gcc-13.3.0_musl.Linux-x86_64.tar.zst"
-          SDK_URL2="https://downloads.immortalwrt.org/releases/24.10-SNAPSHOT/targets/${{ env.arch_path }}/immortalwrt-sdk-24.10-SNAPSHOT-$(echo ${{ env.arch_path }} | tr '/' '-')_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst"
+          SDK_URL1="https://downloads.immortalwrt.org/releases/24.10-SNAPSHOT/targets/${{ env.arch_path }}/immortalwrt-sdk-24.10-SNAPSHOT-${{ env.arch-path }}_gcc-13.3.0_musl.Linux-x86_64.tar.zst"
+          SDK_URL2="https://downloads.immortalwrt.org/releases/24.10-SNAPSHOT/targets/${{ env.arch_path }}/immortalwrt-sdk-24.10-SNAPSHOT-${{ env.arch-path }}_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst"
           wget --spider -q "$SDK_URL1" && wget "$SDK_URL1" || wget "$SDK_URL2"
           mkdir OpenWrt-$(echo ${{ env.arch_path }} | tr '/' '-') && tar -I 'zstd -d' -xf immortalwrt-*.tar.zst -C OpenWrt-$(echo ${{ env.arch_path }} | tr '/' '-') --strip-components 1 && rm immortalwrt-*.tar.zst
 
       - name: 克隆项目
         run: |
-          cd OpenWrt-$(echo ${{ env.arch_path }} | tr '/' '-')
+          cd OpenWrt-${{ env.arch-path }}
           cp -rf ../App/. .
 
           REPO_URL="${{ matrix.repo_url }}"
@@ -194,7 +200,7 @@ jobs:
       - name: 下载依赖
         id: package
         run: |
-          cd OpenWrt-$(echo ${{ env.arch_path }} | tr '/' '-')
+          cd OpenWrt-${{ env.arch-path }}
           mv -f feeds/base feeds/base.bak
           mv -f feeds/packages feeds/packages.bak
           make defconfig
@@ -203,12 +209,12 @@ jobs:
       
       - name: 开始编译
         run: |
-          cd OpenWrt-$(echo ${{ env.arch_path }} | tr '/' '-')
+          cd OpenWrt-${{ env.arch-path }}
           make package/${{ matrix.target }}/compile -j$(nproc) V=s
 
       - name: 准备 ipk
         run: |
-          cd OpenWrt-$(echo ${{ env.arch_path }} | tr '/' '-')
+          cd OpenWrt-${{ env.arch-path }}
           mkdir -p ./artifact/IPK
           find ./bin/packages/*/*/ -maxdepth 1 -type f -name "*.ipk" | xargs -i mv -f {} ./artifact/IPK/
           cd ./artifact/IPK
@@ -217,5 +223,5 @@ jobs:
       - name: 上传 ipk
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.model_name }}-$(echo ${{ env.arch_path }} | tr '/' '-')-${{ matrix.target }}
+          name: ${{ env.model_name }}-${{ env.arch_path }}-${{ matrix.target }}
           path: ${{ env.IPK }}
