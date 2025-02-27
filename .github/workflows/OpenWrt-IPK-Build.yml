@@ -29,35 +29,24 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v4
 
-      - name: 解析设备架构
+      - name: 解析架构
         id: parse-model
         run: |
           MODEL_INPUT="${{ github.event.inputs.Model }}"
-          echo "选中的设备: $MODEL_INPUT"
-          
-          # 读取 Models 文件
           if [ ! -f "scripts/Models" ]; then
             echo "::error::架构映射文件 scripts/Models 不存在"
             exit 1
           fi
-          
           FOUND_ARCH=""
           while IFS= read -r line || [[ -n "$line" ]]; do
-            # 清理行并跳过注释和空行
             line_clean=$(echo "$line" | sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
             [ -z "$line_clean" ] && continue
-            
-            # 分割设备和架构部分
             IFS=':' read -ra parts <<< "$line_clean"
             if [ ${#parts[@]} -ne 2 ]; then
-              echo "::warning::无效行格式: $line"
               continue
             fi
-            
             devices=$(echo "${parts}" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             target_arch=$(echo "${parts}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-            
-            # 检查设备匹配
             while read -r device; do
               if [ "$device" == "$MODEL_INPUT" ]; then
                 if [ -n "$FOUND_ARCH" ]; then
@@ -65,23 +54,16 @@ jobs:
                   exit 1
                 fi
                 FOUND_ARCH="$target_arch"
-                echo "匹配成功: $device → $target_arch"
               fi
             done <<< "$devices"
           done < scripts/Models
-          
           if [ -z "$FOUND_ARCH" ]; then
             echo "::error::未找到设备 '$MODEL_INPUT' 对应的架构"
-            echo "请检查以下内容："
-            echo "1. scripts/Models 文件格式是否正确"
-            echo "2. 设备名称是否严格匹配"
             exit 1
           fi
-          
-          echo "解析出的架构: $FOUND_ARCH"
           echo "arch=$FOUND_ARCH" >> $GITHUB_OUTPUT
 
-      - name: 构建包矩阵
+      - name: 构建矩阵
         id: set-matrix
         env:
           TARGET_ARCH: ${{ steps.parse-model.outputs.arch }}
@@ -92,13 +74,10 @@ jobs:
           PKG_ARRAY=()
           USE_BUILD_FILE=false
 
-          # 优先处理用户输入
           if [ -n "$PACKAGE_INPUT" ]; then
-            echo "检测到用户输入包，忽略 Build-IPK 文件"
             IFS=',; ' read -ra PKG_ARRAY <<< "$PACKAGE_INPUT"
             USE_BUILD_FILE=false
           elif [ -f "Build-IPK" ]; then
-            echo "检测到 Build-IPK 文件存在"
             declare -a tmp_pkgs
             while IFS= read -r line; do
               if [[ "$line" =~ ^[[:space:]]*# ]] || [[ -z "${line// }" ]]; then
@@ -111,71 +90,48 @@ jobs:
               done
             done < Build-IPK
             if [ ${#tmp_pkgs[@]} -gt 0 ]; then
-              echo "文件内容有效，包含 ${#tmp_pkgs[@]} 个包"
-              if git diff --quiet HEAD^ HEAD -- "Build-IPK" 2>/dev/null; then
-                echo "文件未修改，回退到默认包"
-              else
-                echo "文件已修改，使用文件内容构建"
-                PKG_ARRAY=("${tmp_pkgs[@]}")
-                USE_BUILD_FILE=true
-              fi
-            else
-              echo "::warning::文件内容无效，回退到默认包"
+              PKG_ARRAY=("${tmp_pkgs[@]}")
+              USE_BUILD_FILE=true
             fi
           fi
 
           git clone -b $BRANCH --single-branch $REPO_URL OpenWrt-packages
           cd OpenWrt-packages
-          if [ "$USE_BUILD_FILE" = false ]; then
-            if [ ${#PKG_ARRAY[@]} -eq 0 ]; then
-              echo "使用默认包搜索策略"
-              PKG_ARRAY=($(find . -maxdepth 1 -type d -name 'luci-app-*' -printf '%f\n'))
-              if [ ${#PKG_ARRAY[@]} -eq 0 ]; then
-                echo "::warning::主仓库未找到默认包，尝试备用仓库..."
-                cd ..
-                rm -rf OpenWrt-packages
-                REPO_URL="https://github.com/kiddin9/kwrt-packages"
-                BRANCH="main"
-                git clone -b $BRANCH --single-branch $REPO_URL OpenWrt-packages
-                cd OpenWrt-packages
-                PKG_ARRAY=($(find . -maxdepth 1 -type d -name 'luci-app-*' -printf '%f\n'))
-              fi
+
+          filtered_pkgs=()
+          missing_pkgs=()
+          for pkg in "${PKG_ARRAY[@]}"; do
+            if [ -d "$pkg" ]; then
+              filtered_pkgs+=("$pkg")
+            else
+              missing_pkgs+=("$pkg")
             fi
-          fi
-          if [ ${#PKG_ARRAY[@]} -gt 0 ]; then
-            all_exist=true
-            for pkg in "${PKG_ARRAY[@]}"; do
-              if [ ! -d "$pkg" ]; then
-                echo "::warning::包 '$pkg' 在主仓库不存在，尝试备用仓库..."
-                all_exist=false
-                break
+          done
+
+          if [ ${#missing_pkgs[@]} -gt 0 ]; then
+            cd ../..
+            REPO_URL="https://github.com/kiddin9/kwrt-packages"
+            BRANCH="main"
+            git clone -b $BRANCH --single-branch $REPO_URL OpenWrt-packages-alt
+            cd OpenWrt-packages-alt
+            for pkg in "${missing_pkgs[@]}"; do
+              if [ -d "$pkg" ]; then
+                filtered_pkgs+=("$pkg")
               fi
             done
-            if [ "$all_exist" = false ]; then
-              cd ..
-              rm -rf OpenWrt-packages
-              REPO_URL="https://github.com/kiddin9/kwrt-packages"
-              BRANCH="main"
-              git clone -b $BRANCH --single-branch $REPO_URL OpenWrt-packages
-              cd OpenWrt-packages
-              for pkg in "${PKG_ARRAY[@]}"; do
-                if [ ! -d "$pkg" ]; then
-                  echo "::error::包 '$pkg' 在备用仓库也不存在"
-                  exit 1
-                fi
-              done
-            fi
-          else
-            echo "::error::未找到任何有效包"
+            cd ..
+          fi
+
+          PKG_ARRAY=("${filtered_pkgs[@]}")
+          if [ ${#PKG_ARRAY[@]} -eq 0 ]; then
+            echo "::error::所有包均不存在，无法构建"
             exit 1
           fi
+
           targets_json=$(jq -c -n \
             --argjson arr "$(printf '%s\n' "${PKG_ARRAY[@]}" | jq -R . | jq -s .)" \
             --arg arch "$TARGET_ARCH" \
             '[$arch as $a | $arr[] | {target: ., arch: $a}]')
-          
-          cd ..
-          rm -rf OpenWrt-packages
           echo "matrix=$targets_json" >> $GITHUB_OUTPUT
           echo "repo_url=$REPO_URL" >> $GITHUB_OUTPUT
 
@@ -195,8 +151,6 @@ jobs:
         uses: actions/checkout@v4
 
       - name: 加载环境
-        env:
-          DEBIAN_FRONTEND: noninteractive
         run: |
           sudo apt-get update -qq
           sudo apt-get install -qq --no-install-recommends \
@@ -204,9 +158,6 @@ jobs:
             git libncurses5-dev libssl-dev python3 python3-pyelftools python3-setuptools \
             rsync unzip zstd zlib1g-dev jq subversion qemu-utils ccache \
             libelf-dev device-tree-compiler libgmp3-dev libmpc-dev  
-          sudo apt-get autoremove --purge -qq
-          sudo rm -rf /var/lib/apt/lists/*
-          sudo timedatectl set-timezone "Asia/Shanghai"
           git clone --depth=1 https://github.com/openwrt-dev/po2lmo
           (cd po2lmo && sudo make && sudo make install)
 
@@ -251,18 +202,10 @@ jobs:
             rm -rf {packages,package/golang}
           fi
           
-          ./scripts/feeds update -a
           ./scripts/feeds install ${{ matrix.target }}
-          
-          if [ -f "package/${{ matrix.target }}/Makefile" ]; then
-            echo "CONFIG_PACKAGE_${{ matrix.target }}=y" >> .config
-          else
-            echo "::error::包 ${{ matrix.target }} 最终不存在于仓库中"
-            exit 1
-          fi
+          echo "CONFIG_PACKAGE_${{ matrix.target }}=y" >> .config
 
       - name: 下载依赖
-        id: package
         run: |
           cd OpenWrt-${{ env.arch_path }}
           mv -f feeds/base feeds/base.bak
@@ -286,7 +229,6 @@ jobs:
 
       - name: 上传 ipk
         uses: actions/upload-artifact@v4
-        id: upipk
         with:
           name: ${{ env.date }} (${{ env.arch_path }})-${{ matrix.target }}
           path: ${{ env.IPK }}
