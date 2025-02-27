@@ -14,11 +14,13 @@ on:
       Model:
         description: '选择设备（与架构互斥）'
         required: false
+        default: ''
         type: choice
         options: ['普通PC', '迷你主机', 'Proxmox VE虚拟机', 'VMware虚拟机', '小米路由器4A千兆版', 'Xiaomi R4A', 'Redmi AX6', 'Redmi AX6000', '小米AX3600', 'Xiaomi AX9000', 'ASUS RT-ACRH17', 'ASUS RT-AC58U', 'ASUS RT-AX86U', 'ASUS RT-AX88U', 'Netgear R7800', 'Netgear XR500', 'Netgear WAX202', 'Linksys WRT1900ACS', 'Linksys WRT3200ACM', 'Linksys EA7500v2', 'GL.iNet MT1300', 'GL.iNet AX1800', '斐讯K3', 'Newifi D2', '极路由4 HC5962', 'Raspberry Pi 4B']
       Arch:
         description: '选择架构（与设备互斥）'
         required: false
+        default: 'x86/64'
         type: choice
         options: ['x86/64', 'ramips/mt7621', 'ipq807x/generic', 'ipq40xx/generic', 'ipq806x/generic', 'bcm4908/generic', 'bcm27xx/bcm2711', 'mediatek/mt7622', 'mediatek/mt7986', 'rockchip/armv8', 'mvebu/cortexa9', 'ath79/generic', 'lantiq/xrx200', 'realtek/rtl838x', 'realtek/rtl930x', 'zynq/generic']
       Package:
