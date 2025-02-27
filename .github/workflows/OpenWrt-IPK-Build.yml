@@ -11,9 +11,14 @@ name: OpenWrt-IPK-Builder
 on: 
   workflow_dispatch:
     inputs:
+      Model:
+        description: '选择设备（与架构互斥）'
+        required: false
+        type: choice
+        options: ['小米', 'pc微型机','pc主机']
       Arch:
-        description: '选择架构'
-        default: 'x86/64'
+        description: '选择架构（与设备互斥）'
+        required: false
         type: choice
         options: ['x86/64', 'ipq40xx/generic', 'ipq806x/generic', 'ramips/mt7620', 'ramips/mt7621', 'ramips/mt76x8', 'ramips/rt288x', 'ramips/rt305x', 'ramips/rt3883', 'ath79/generic', 'sunxi/cortexa7', 'sunxi/cortexa8', 'sunxi/cortexa53', 'bcm27xx/bcm2708', 'bcm27xx/bcm2709', 'bcm27xx/bcm2710', 'bcm27xx/bcm2711', 'bcm27xx/bcm2712', 'bcm47xx/generic', 'mediatek/mt7622', 'mediatek/mt7623', 'mediatek/mt7629', 'lantiq/xrx200', 'rockchip/armv8', 'mvebu/cortexa9', 'realtek/rtl838x', 'realtek/rtl839x', 'realtek/rtl930x', 'realtek/rtl931x', 'zynq/generic']
       Package:
@@ -31,10 +36,77 @@ jobs:
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
       repo_url: ${{ steps.set-matrix.outputs.repo_url }}
+      target_arch: ${{ steps.set-arch.outputs.arch }}
     
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 配置文件校验
+        run: |
+          # 校验Archs文件格式
+          if grep -qE '[^/]/[^/ ]+' scripts/Archs; then
+              echo "::error::Archs文件包含非法架构格式（必须为target/subtarget）"
+              exit 1
+          fi
+          
+          # 校验Models文件格式
+          if ! grep -qE '^[^:]+:[^:]+' scripts/Models; then
+              echo "::error::Models文件存在格式错误行（必须为 设备列表:架构）"
+              exit 1
+          fi
+
+      - name: 输入验证
+        run: |
+          if [[ -n "${{ github.event.inputs.Model }}" && -n "${{ github.event.inputs.Arch }}" ]]; then
+            echo "::error::不能同时选择设备和架构"
+            exit 1
+          elif [[ -z "${{ github.event.inputs.Model }}" && -z "${{ github.event.inputs.Arch }}" ]]; then
+            echo "::error::必须选择设备或架构"
+            exit 1
+          fi
+
+      - name: 设置目标架构
+        id: set-arch
+        run: |
+          # 从配置文件读取设备-架构映射
+          declare -A MODEL_ARCH_MAP
+          while IFS=: read -r models arch; do
+            # 跳过注释行和空行
+            [[ "$models" =~ ^# ]] && continue
+            [[ -z "$models" ]] && continue
+            
+            # 清理空格并分割设备列表
+            clean_models=$(echo "$models" | xargs)
+            IFS=',; ' read -ra model_arr <<< "$clean_models"
+            
+            # 保存到关联数组
+            for model in "${model_arr[@]}"; do
+              MODEL_ARCH_MAP["$(echo $model | xargs)"]=$(echo "$arch" | xargs)
+            done
+          done < scripts/Models
+
+          if [[ -n "${{ github.event.inputs.Model }}" ]]; then
+            selected_model="${{ github.event.inputs.Model }}"
+            if [[ ! -v MODEL_ARCH_MAP["$selected_model"] ]]; then
+              echo "::error::未找到 $selected_model 对应的架构"
+              exit 1
+            fi
+            resolved_arch=${MODEL_ARCH_MAP["$selected_model"]}
+            echo "选择的设备: $selected_model → $resolved_arch"
+            echo "arch=$resolved_arch" >> $GITHUB_OUTPUT
+          else
+            validate_arch="${{ github.event.inputs.Arch }}"
+            # 使用正则匹配架构是否存在
+            if ! grep -qE "(^|[,; ])$validate_arch([,; ]|$)" scripts/Archs; then
+              echo "::error::无效的架构: $validate_arch"
+              exit 1
+            fi
+            echo "选择的架构: $validate_arch"
+            echo "arch=$validate_arch" >> $GITHUB_OUTPUT
+          fi
 
       - name: 构建矩阵
         id: set-matrix
@@ -49,26 +121,26 @@ jobs:
             echo "检测到 Build-IPK 文件存在"
             declare -a tmp_pkgs
             while IFS= read -r line; do
-              if [[ "$line" =~ ^[[:space:]]*# ]] || [[ -z "${line// }" ]]; then
-                continue
-              fi
+              # 跳过注释和空行
+              [[ "$line" =~ ^[[:space:]]*# ]] && continue
+              [[ -z "${line// }" ]] && continue
+              
+              # 使用多种分隔符分割
               IFS=',; ' read -ra pkgs <<< "$line"
               for pkg in "${pkgs[@]}"; do
                 clean_pkg=$(echo "$pkg" | xargs)
                 [ -n "$clean_pkg" ] && tmp_pkgs+=("$clean_pkg")
               done
             done < Build-IPK
+            
             if [ ${#tmp_pkgs[@]} -gt 0 ]; then
               echo "文件内容有效，包含 ${#tmp_pkgs[@]} 个包"
               if git diff --quiet HEAD^ HEAD -- "Build-IPK" 2>/dev/null; then
                 echo "文件未修改，回退到输入/默认包"
               else
-                echo "文件已修改，使用文件内容构建"
                 PKG_ARRAY=("${tmp_pkgs[@]}")
                 USE_BUILD_FILE=true
               fi
-            else
-              echo "::warning::文件内容无效，回退到输入/默认包"
             fi
           fi
 
@@ -95,28 +167,35 @@ jobs:
             fi
           fi
 
+          # 包存在性验证（新增备用仓库检查逻辑）
           if [ ${#PKG_ARRAY[@]} -gt 0 ]; then
-            all_exist=true
-            for pkg in "${PKG_ARRAY[@]}"; do
-              if [ ! -d "$pkg" ]; then
-                echo "::warning::包 '$pkg' 在主仓库不存在，尝试备用仓库..."
-                all_exist=false
-                break
-              fi
-            done
-            if [ "$all_exist" = false ]; then
-              cd ..
-              rm -rf OpenWrt-packages
-              REPO_URL="https://github.com/kiddin9/kwrt-packages"
-              BRANCH="main"
-              git clone -b $BRANCH --single-branch $REPO_URL OpenWrt-packages
-              cd OpenWrt-packages
-              for pkg in "${PKG_ARRAY[@]}"; do
+            check_pkg_existence() {
+              local repo_url=$1
+              local branch=$2
+              local pkg_array=("${@:3}")
+              
+              git clone -b $branch --single-branch $repo_url temp-repo
+              cd temp-repo
+              for pkg in "${pkg_array[@]}"; do
                 if [ ! -d "$pkg" ]; then
-                  echo "::error::包 '$pkg' 在备用仓库也不存在"
-                  exit 1
+                  cd ..
+                  rm -rf temp-repo
+                  return 1
                 fi
               done
+              cd ..
+              rm -rf temp-repo
+              return 0
+            }
+
+            if ! check_pkg_existence $REPO_URL $BRANCH "${PKG_ARRAY[@]}"; then
+              echo "::warning::包在主仓库不存在，尝试备用仓库..."
+              REPO_URL="https://github.com/kiddin9/kwrt-packages"
+              BRANCH="main"
+              if ! check_pkg_existence $REPO_URL $BRANCH "${PKG_ARRAY[@]}"; then
+                echo "::error::以下包在仓库中不存在: ${PKG_ARRAY[@]}"
+                exit 1
+              fi
             fi
           else
             echo "::error::未找到任何有效包"
