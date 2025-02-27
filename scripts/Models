@@ -6,12 +6,12 @@
 # 格式说明：设备列表:架构 (支持多设备单行)
 
 #PC系列
-普通PC,迷你主机,Proxmox VE虚拟机,VMware虚拟机: x86/64
+General PC, Mini PC, Proxmox VE VM, VMware VM: x86/64
 
 # 小米系列
-小米路由器4A千兆版,Xiaomi R4A: ramips/mt7621
+Xiaomi 4A Gigabit Edition,Xiaomi R4A: ramips/mt7621
 Redmi AX6,Redmi AX6000: ipq807x/generic
-小米AX3600,Xiaomi AX9000: ipq807x/generic
+Xiaomi AX3600,Xiaomi AX9000: ipq807x/generic
 
 # 华硕系列
 ASUS RT-ACRH17,ASUS RT-AC58U: ipq40xx/generic
