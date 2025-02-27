@@ -1,21 +1,14 @@
-# =================================================
-# OpenWrt IPK 多仓库构建工作流
-# 仓库: https://github.com/somemoo/OpenWrt
-# 特性: 支持多仓库回退/架构选择/增量编译
-# 许可证: MIT  
-# 作者: vison.v
-# =================================================
-
 name: OpenWrt-IPK-Builder
 
 on: 
   workflow_dispatch:
     inputs:
-      Arch:
-        description: '选择架构'
-        default: 'x86/64'
+      Model:
+        description: '选择设备（自动解析架构）'
+        required: true
+        default: '迷你主机'
         type: choice
-        options: ['x86/64', 'ipq40xx/generic', 'ipq806x/generic', 'ramips/mt7620', 'ramips/mt7621', 'ramips/mt76x8', 'ramips/rt288x', 'ramips/rt305x', 'ramips/rt3883', 'ath79/generic', 'sunxi/cortexa7', 'sunxi/cortexa8', 'sunxi/cortexa53', 'bcm27xx/bcm2708', 'bcm27xx/bcm2709', 'bcm27xx/bcm2710', 'bcm27xx/bcm2711', 'bcm27xx/bcm2712', 'bcm47xx/generic', 'mediatek/mt7622', 'mediatek/mt7623', 'mediatek/mt7629', 'lantiq/xrx200', 'rockchip/armv8', 'mvebu/cortexa9', 'realtek/rtl838x', 'realtek/rtl839x', 'realtek/rtl930x', 'realtek/rtl931x', 'zynq/generic']
+        options: ['迷你主机', '普通PC', 'Proxmox VE虚拟机', 'VMware虚拟机', '小米路由器4A千兆版', 'Xiaomi R4A', 'Redmi AX6', 'Redmi AX6000', '小米AX3600', 'Xiaomi AX9000', 'ASUS RT-ACRH17', 'ASUS RT-AC58U', 'ASUS RT-AX86U', 'ASUS RT-AX88U', 'Netgear R7800', 'Netgear XR500', 'Netgear WAX202', 'Linksys WRT1900ACS', 'Linksys WRT3200ACM', 'Linksys EA7500v2', 'GL.iNet MT1300', 'GL.iNet AX1800', '斐讯K3', 'Newifi D2', '极路由4 HC5962', 'Raspberry Pi 4B']
       Package:
         description: '输入包名 (例如: luci-app-adguardhome)'
         required: false
@@ -34,10 +27,63 @@ jobs:
     
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@main
 
-      - name: 构建矩阵
+      - name: 解析设备架构
+        id: parse-model
+        run: |
+          MODEL_INPUT="${{ github.event.inputs.Model }}" >> $GITHUB_OUTPUT
+          
+          # 读取 Models 文件
+          if [ ! -f "scripts/Models" ]; then
+            echo "::error::架构映射文件 scripts/Models 不存在"
+            exit 1
+          fi
+          
+          FOUND_ARCH=""
+          while IFS= read -r line || [[ -n "$line" ]]; do
+            # 清理行并跳过注释和空行
+            line_clean=$(echo "$line" | sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+            [ -z "$line_clean" ] && continue
+            
+            # 分割设备和架构部分
+            IFS=':' read -ra parts <<< "$line_clean"
+            if [ ${#parts[@]} -ne 2 ]; then
+              echo "::warning::无效行格式: $line"
+              continue
+            fi
+            
+            devices=$(echo "${parts[0]}" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            target_arch=$(echo "${parts[1]}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            
+            # 检查设备匹配
+            while read -r device; do
+              if [ "$device" == "$MODEL_INPUT" ]; then
+                if [ -n "$FOUND_ARCH" ]; then
+                  echo "::error::设备 '$MODEL_INPUT' 在多个架构中定义"
+                  exit 1
+                fi
+                FOUND_ARCH="$target_arch"
+                echo "匹配成功: $device → $target_arch"
+              fi
+            done <<< "$devices"
+          done < scripts/Models
+          
+          if [ -z "$FOUND_ARCH" ]; then
+            echo "::error::未找到设备 '$MODEL_INPUT' 对应的架构"
+            echo "请检查以下内容："
+            echo "1. scripts/Models 文件格式是否正确"
+            echo "2. 设备名称是否严格匹配"
+            exit 1
+          fi
+          
+          echo "解析出的架构: $FOUND_ARCH"
+          echo "arch=$FOUND_ARCH" >> $GITHUB_OUTPUT
+
+      - name: 构建包矩阵
         id: set-matrix
+        env:
+          TARGET_ARCH: ${{ steps.parse-model.outputs.arch }}
         run: |
           PACKAGE_INPUT="${{ github.event.inputs.Package }}"
           REPO_URL="https://github.com/somemoo/OpenWrt-packages"
@@ -118,22 +164,23 @@ jobs:
             echo "::error::未找到任何有效包"
             exit 1
           fi
-          targets_json=$(jq -c -n --argjson arr "$(printf '%s\n' "${PKG_ARRAY[@]}" | jq -R . | jq -s .)" '$arr')
+          #targets_json=$(jq -c -n --argjson arr "$(printf '%s\n' "${PKG_ARRAY[@]}" | jq -R . | jq -s .)" '$arr')
+          targets_json=$(jq -c -n \
+            --argjson arr "$(printf '%s\n' "${PKG_ARRAY[@]}" | jq -R . | jq -s .)" \
+            --arg arch "$TARGET_ARCH" \
+            '[$arch as $a | $arr[] | {target: ., arch: $a}]')
           
           cd ..
           rm -rf OpenWrt-packages
           echo "matrix=$targets_json" >> $GITHUB_OUTPUT
           echo "repo_url=$REPO_URL" >> $GITHUB_OUTPUT
   build:
-    name: 构建 ${{ matrix.target }}-(${{ matrix.arch }})
+    name: 构建 ${{ matrix.target }} (${{ matrix.arch }})
     runs-on: ubuntu-latest
     needs: matrix
     strategy:
-      matrix:
-        target: ${{ fromJson(needs.matrix.outputs.matrix) }}
-        arch: ["${{ github.event.inputs.Arch }}"]
+      matrix: ${{ fromJson(needs.matrix.outputs.matrix) }}
       fail-fast: false
-    
     env:
       REPO_URL: ${{ needs.matrix.outputs.repo_url }}
 
