@@ -8,7 +8,7 @@ on:
         required: true
         default: '迷你主机'
         type: choice
-        options: ['迷你主机', '普通PC', 'Proxmox VE虚拟机', 'VMware虚拟机', '小米路由器4A千兆版', 'Xiaomi R4A', 'Redmi AX6', 'Redmi AX6000', '小米AX3600', 'Xiaomi AX9000', 'ASUS RT-ACRH17', 'ASUS RT-AC58U', 'ASUS RT-AX86U', 'ASUS RT-AX88U', 'Netgear R7800', 'Netgear XR500', 'Netgear WAX202', 'Linksys WRT1900ACS', 'Linksys WRT3200ACM', 'Linksys EA7500v2', 'GL.iNet MT1300', 'GL.iNet AX1800', '斐讯K3', 'Newifi D2', '极路由4 HC5962', 'Raspberry Pi 4B']
+        options: ['General PC', 'Mini PC', 'Proxmox VE VM', 'VMware VM', 'Xiaomi 4A Gigabit Edition', 'Xiaomi R4A', 'Redmi AX6', 'Redmi AX6000', 'Xiaomi AX3600', 'Xiaomi AX9000', 'ASUS RT-ACRH17', 'ASUS RT-AC58U', 'ASUS RT-AX86U', 'ASUS RT-AX88U', 'Netgear R7800', 'Netgear XR500', 'Netgear WAX202', 'Linksys WRT1900ACS', 'Linksys WRT3200ACM', 'Linksys EA7500v2', 'GL.iNet MT1300', 'GL.iNet AX1800', 'Phicomm K3', 'Newifi D2', 'HiWiFi HC5962', 'Raspberry Pi 4B']
       Package:
         description: '输入包名 (例如: luci-app-adguardhome)'
         required: false
