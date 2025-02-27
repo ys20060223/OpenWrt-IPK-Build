@@ -52,8 +52,8 @@ jobs:
               continue
             fi
             
-            devices=$(echo "${parts}" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-            target_arch=$(echo "${parts}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            devices=$(echo "${parts[0]}" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            target_arch=$(echo "${parts[1]}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             
             while read -r device; do
               if [ "$device" == "$MODEL_INPUT" ]; then
@@ -84,7 +84,9 @@ jobs:
           BRANCH="lede"
           PKG_ARRAY=()
           USE_BUILD_FILE=false
+          REPO_URL="$MAIN_REPO"  # 默认使用主仓库
 
+          # 解析输入的包
           if [ -n "$PACKAGE_INPUT" ]; then
             IFS=',; ' read -ra PKG_ARRAY <<< "$PACKAGE_INPUT"
           elif [ -f "Build-IPK" ]; then
@@ -105,44 +107,53 @@ jobs:
             fi
           fi
 
+          # 克隆主仓库并过滤存在的包
           git clone -b $BRANCH --single-branch $MAIN_REPO OpenWrt-packages
           cd OpenWrt-packages
-
-          filtered_pkgs=()
+          main_pkgs=()
           missing_pkgs=()
           for pkg in "${PKG_ARRAY[@]}"; do
             if [ -d "$pkg" ]; then
-              filtered_pkgs+=("$pkg")
+              main_pkgs+=("$pkg")
             else
               missing_pkgs+=("$pkg")
             fi
           done
 
+          # 检查备用仓库中的包
+          alt_pkgs=()
           if [ ${#missing_pkgs[@]} -gt 0 ]; then
             cd ..
             git clone -b main --single-branch $ALT_REPO OpenWrt-packages-alt
             cd OpenWrt-packages-alt
             for pkg in "${missing_pkgs[@]}"; do
               if [ -d "$pkg" ]; then
-                filtered_pkgs+=("$pkg")
+                alt_pkgs+=("$pkg")
               fi
             done
             cd ..
           fi
 
-          PKG_ARRAY=("${filtered_pkgs[@]}")
-          if [ ${#PKG_ARRAY[@]} -eq 0 ]; then
+          # 合并有效包并设置仓库URL
+          final_pkgs=("${main_pkgs[@]}" "${alt_pkgs[@]}")
+          if [ ${#final_pkgs[@]} -eq 0 ]; then
             echo "::error::所有包均不存在，无法构建"
             exit 1
           fi
 
+          # 动态设置仓库URL：如果备用仓库有包则切换
+          if [ ${#alt_pkgs[@]} -gt 0 ]; then
+            REPO_URL="$ALT_REPO"
+          fi
+
+          # 生成构建矩阵
           targets_json=$(jq -c -n \
-            --argjson arr "$(printf '%s\n' "${PKG_ARRAY[@]}" | jq -R . | jq -s .)" \
+            --argjson arr "$(printf '%s\n' "${final_pkgs[@]}" | jq -R . | jq -s .)" \
             --arg arch "$TARGET_ARCH" \
             '[$arch as $a | $arr[] | {target: ., arch: $a}]')
           
           echo "matrix=$targets_json" >> $GITHUB_OUTPUT
-          echo "repo_url=$MAIN_REPO" >> $GITHUB_OUTPUT
+          echo "repo_url=$REPO_URL" >> $GITHUB_OUTPUT
 
   build:
     name: 构建 ${{ matrix.target }} (${{ needs.matrix.outputs.arch }})
@@ -158,6 +169,7 @@ jobs:
       model_name: ${{ needs.matrix.outputs.model_name }}
 
     steps:
+      # 以下步骤保持不变...
       - name: 检出代码
         uses: actions/checkout@v4
 
