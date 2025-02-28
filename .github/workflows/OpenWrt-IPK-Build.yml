@@ -53,6 +53,7 @@ jobs:
             USE_ARCH_MODE=true
           fi
           echo "use_arch_mode=$USE_ARCH_MODE" >> $GITHUB_OUTPUT
+          echo "use_arch_mode：$USE_ARCH_MODE"
 
       - name: 解析设备架构
         id: parse-model
