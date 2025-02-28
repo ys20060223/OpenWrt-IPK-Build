@@ -1,3 +1,11 @@
+# =================================================
+# OpenWrt IPK 多仓库构建工作流
+# 仓库: https://github.com/somemoo/OpenWrt
+# 特性: 支持多仓库回退/架构选择/增量编译
+# 许可证: MIT  
+# 作者: vison.v
+# =================================================
+
 name: OpenWrt-IPK-Builder
 
 on: 
@@ -49,18 +57,14 @@ jobs:
               fi
               SANITIZED_ARCHS+=("$arch")
             done
-            # 修复输出语法
             echo "archs=${SANITIZED_ARCHS[*]}" >> $GITHUB_OUTPUT
             USE_ARCH_MODE=true
           fi
 
           echo "use_arch_mode=$USE_ARCH_MODE" >> $GITHUB_OUTPUT
-          echo "Debug Output:"
-          cat $GITHUB_OUTPUT  # 验证输出内容
 
       - name: 解析设备架构
         id: parse-model
-        # 修复条件判断语法
         if: ${{ !fromJson(steps.parse-input.outputs.use_arch_mode) }}
         run: |
           MODEL_INPUT="${{ github.event.inputs.Model }}"
@@ -92,7 +96,7 @@ jobs:
           
           [ -z "$FOUND_ARCH" ] && echo "::error::未找到设备对应架构" && exit 1
           echo "model_name=$(echo "$MODEL_INPUT" | tr ' ' '-')" >> $GITHUB_OUTPUT
-          echo "arch=$FOUND_ARCH" >> $GITHUB_OUTPUT  # 确保输出架构变量
+          echo "arch=$FOUND_ARCH" >> $GITHUB_OUTPUT
 
       - name: 生成构建矩阵
         id: set-matrix
@@ -100,7 +104,6 @@ jobs:
           if ${{ steps.parse-input.outputs.use_arch_mode }}; then
             IFS=' ' read -ra ARCH_ARRAY <<< "${{ steps.parse-input.outputs.archs }}"
           else
-            # 关键修复：从parse-model步骤获取架构
             ARCH_ARRAY=("${{ steps.parse-model.outputs.arch }}")  
           fi
           
