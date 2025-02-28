@@ -54,7 +54,7 @@ jobs:
           fi
           echo "use_arch_mode=$USE_ARCH_MODE" >> $GITHUB_OUTPUT
           echo "use_arch_mode：$USE_ARCH_MODE"
-          echo "Parsed use_arch_mode: ${{ steps.parse-input.outputs.use_arch_mode }}
+          echo "Parsed use_arch_mode: ${{ steps.parse-input.outputs.use_arch_mode }}"
 
       - name: 解析设备架构
         id: parse-model
