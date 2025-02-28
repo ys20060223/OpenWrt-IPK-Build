@@ -87,7 +87,7 @@ jobs:
           
           [ -z "$FOUND_ARCH" ] && echo "::error::未找到设备对应架构" && exit 1
           echo "model_name=$(echo "$MODEL_INPUT" | tr ' ' '-')" >> $GITHUB_OUTPUT
-          echo "arch=$FOUND_ARCH" >> $GITHUB_OUTPUT  # 关键修复：确保输出架构变量
+          echo "arch=$FOUND_ARCH" >> $GITHUB_OUTPUT  # 确保输出架构变量
 
       - name: 生成构建矩阵
         id: set-matrix
@@ -95,7 +95,8 @@ jobs:
           if ${{ steps.parse-input.outputs.use_arch_mode }}; then
             IFS=' ' read -ra ARCH_ARRAY <<< "${{ steps.parse-input.outputs.archs }}"
           else
-            ARCH_ARRAY=("${{ steps.parse-model.outputs.arch }}")  # 正确引用解析的架构
+            # 关键修复：从parse-model步骤获取架构
+            ARCH_ARRAY=("${{ steps.parse-model.outputs.arch }}")  
           fi
           
           PACKAGE_INPUT="${{ github.event.inputs.Package }}"
@@ -153,7 +154,7 @@ jobs:
         id: ENV
         run: |
           echo "date=$(date +'%m.%d')" >> $GITHUB_ENV
-          echo "arch-path=$(echo ${{ env.arch_path }} | tr '/' '-')" >> $GITHUB_ENV
+          echo "arch-path=$(echo ${{ matrix.arch }} | tr '/' '-')" >> $GITHUB_ENV  # 直接使用矩阵中的arch值
 
       - name: 准备SDK
         run: |
