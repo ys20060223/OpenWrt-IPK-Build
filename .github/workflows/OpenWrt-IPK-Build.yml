@@ -23,16 +23,7 @@ env:
 
 jobs:
   matrix:
-    runs-on: ubuntu-latest
-    if: github.event.repository.owner.id == github.event.sender.id || !github.event.sender.id
-    outputs:
-      matrix: ${{ steps.set-matrix.outputs.matrix }}
-      model_name: ${{ steps.parse-model.outputs.model_name }}
-    
     steps:
-      - name: 检出代码
-        uses: actions/checkout@v4
-
       - name: 解析输入模式
         id: parse-input
         run: |
@@ -49,16 +40,19 @@ jobs:
               fi
               SANITIZED_ARCHS+=("$arch")
             done
+            # 修复输出语法
             echo "archs=${SANITIZED_ARCHS[*]}" >> $GITHUB_OUTPUT
             USE_ARCH_MODE=true
           fi
+
           echo "use_arch_mode=$USE_ARCH_MODE" >> $GITHUB_OUTPUT
-          echo "use_arch_mode：$USE_ARCH_MODE"
-          echo "Parsed use_arch_mode: ${{ steps.parse-input.outputs.use_arch_mode }}"
+          echo "Debug Output:"
+          cat $GITHUB_OUTPUT  # 验证输出内容
 
       - name: 解析设备架构
         id: parse-model
-        if: ${{ !steps.parse-input.outputs.use_arch_mode }}
+        # 修复条件判断语法
+        if: ${{ !fromJson(steps.parse-input.outputs.use_arch_mode) }}
         run: |
           MODEL_INPUT="${{ github.event.inputs.Model }}"
           if [ ! -f "scripts/Models" ]; then
