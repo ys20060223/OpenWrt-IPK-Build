@@ -27,7 +27,6 @@ jobs:
     if: github.event.repository.owner.id == github.event.sender.id || !github.event.sender.id
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
-      arch: ${{ steps.parse-model.outputs.arch }}
       model_name: ${{ steps.parse-model.outputs.model_name }}
     
     steps:
@@ -38,25 +37,19 @@ jobs:
         id: parse-input
         run: |
           ARCH_INPUT="${{ github.event.inputs.Arch }}"
-          PACKAGE_INPUT="${{ github.event.inputs.Package }}"
           USE_ARCH_MODE=false
           
           if [ -n "$ARCH_INPUT" ]; then
             IFS=',; ' read -ra ARCH_ARRAY <<< "$ARCH_INPUT"
             SANITIZED_ARCHS=()
             for arch in "${ARCH_ARRAY[@]}"; do
-              if [[ ! "$arch" =~ ^[a-zA-Z0-9_-]+\/[a-zA-Z0-9_-]+$ ]]; then
+              if [[ ! "$arch" =~ ^[a-z0-9_-]+\/[a-z0-9_-]+$ ]]; then
                 echo "::error::无效架构格式: $arch"
                 exit 1
               fi
               SANITIZED_ARCHS+=("$arch")
             done
             echo "archs=${SANITIZED_ARCHS[*]}" >> $GITHUB_OUTPUT
-            
-            if [ -z "$PACKAGE_INPUT" ] && [ ! -s "Build-IPK" ]; then
-              echo "::error::Arch模式需要Package输入或Build-IPK文件"
-              exit 1
-            fi
             USE_ARCH_MODE=true
           fi
           echo "use_arch_mode=$USE_ARCH_MODE" >> $GITHUB_OUTPUT
@@ -84,7 +77,7 @@ jobs:
             while read -r device; do
               if [ "$device" == "$MODEL_INPUT" ]; then
                 if [ -n "$FOUND_ARCH" ]; then
-                  echo "::error::设备重复定义"
+                  echo "::error::设备重复定义: $MODEL_INPUT"
                   exit 1
                 fi
                 FOUND_ARCH="$target_arch"
@@ -92,24 +85,26 @@ jobs:
             done <<< "$devices"
           done < scripts/Models
           
-          [ -z "$FOUND_ARCH" ] && echo "::error::未找到对应架构" && exit 1
-          echo "arch=$FOUND_ARCH" >> $GITHUB_OUTPUT
+          [ -z "$FOUND_ARCH" ] && echo "::error::未找到设备对应架构" && exit 1
           echo "model_name=$(echo "$MODEL_INPUT" | tr ' ' '-')" >> $GITHUB_OUTPUT
+          echo "arch=$FOUND_ARCH" >> $GITHUB_OUTPUT  # 关键修复：确保输出架构变量
 
       - name: 生成构建矩阵
         id: set-matrix
         run: |
           if ${{ steps.parse-input.outputs.use_arch_mode }}; then
             IFS=' ' read -ra ARCH_ARRAY <<< "${{ steps.parse-input.outputs.archs }}"
-            PKG_SOURCE="${{ github.event.inputs.Package }}"
-            [[ -z "$PKG_SOURCE" ]] && PKG_SOURCE=$(grep -vE '^#|^$' Build-IPK | tr '\n' ' ')
           else
-            ARCH_ARRAY=("${{ steps.parse-model.outputs.arch }}")
-            PKG_SOURCE="${{ github.event.inputs.Package }}"
-            [[ -z "$PKG_SOURCE" ]] && PKG_SOURCE=$(grep -vE '^#|^$' Build-IPK | tr '\n' ' ')
+            ARCH_ARRAY=("${{ steps.parse-model.outputs.arch }}")  # 正确引用解析的架构
           fi
           
+          PACKAGE_INPUT="${{ github.event.inputs.Package }}"
+          PKG_SOURCE="$PACKAGE_INPUT"
+          if [ -z "$PKG_SOURCE" ]; then
+            PKG_SOURCE=$(grep -vE '^#|^$' Build-IPK | tr '\n' ' ')
+          fi
           IFS=',; ' read -ra PKG_ARRAY <<< "$PKG_SOURCE"
+          
           git clone -b lede --depth=1 https://github.com/somemoo/OpenWrt-packages
           git clone -b main --depth=1 https://github.com/kiddin9/kwrt-packages
           
@@ -118,7 +113,7 @@ jobs:
             for pkg in "${PKG_ARRAY[@]}"; do
               if [ -d "OpenWrt-packages/$pkg" ]; then
                 matrix_entries+=("{\"target\":\"$pkg\",\"repo_url\":\"https://github.com/somemoo/OpenWrt-packages\",\"branch\":\"lede\",\"arch\":\"$arch\"}")
-              elif [ -d "OpenWrt-packages-alt/$pkg" ]; then
+              elif [ -d "kwrt-packages/$pkg" ]; then
                 matrix_entries+=("{\"target\":\"$pkg\",\"repo_url\":\"https://github.com/kiddin9/kwrt-packages\",\"branch\":\"main\",\"arch\":\"$arch\"}")
               fi
             done
