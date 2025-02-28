@@ -34,7 +34,7 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v4
 
-      - name: 解析输入
+      - name: 解析输入模式
         id: parse-input
         run: |
           ARCH_INPUT="${{ github.event.inputs.Arch }}"
@@ -42,37 +42,32 @@ jobs:
           USE_ARCH_MODE=false
           
           if [ -n "$ARCH_INPUT" ]; then
-            echo "Arch输入检测"
             IFS=',; ' read -ra ARCH_ARRAY <<< "$ARCH_INPUT"
             SANITIZED_ARCHS=()
             for arch in "${ARCH_ARRAY[@]}"; do
-              if [[ "$arch" =~ ^[a-zA-Z0-9_-]+\/[a-zA-Z0-9_-]+$ ]]; then
-                SANITIZED_ARCHS+=("$arch")
-              else
+              if [[ ! "$arch" =~ ^[a-zA-Z0-9_-]+\/[a-zA-Z0-9_-]+$ ]]; then
                 echo "::error::无效架构格式: $arch"
                 exit 1
               fi
+              SANITIZED_ARCHS+=("$arch")
             done
-            echo "archs=${SANITIZED_ARCHS[@]}" >> $GITHUB_OUTPUT
+            echo "archs=${SANITIZED_ARCHS[*]}" >> $GITHUB_OUTPUT
             
             if [ -z "$PACKAGE_INPUT" ] && [ ! -s "Build-IPK" ]; then
               echo "::error::Arch模式需要Package输入或Build-IPK文件"
               exit 1
             fi
             USE_ARCH_MODE=true
-            echo "model_name=manual-arch" >> $GITHUB_OUTPUT
-          else
-            echo "继续原设备解析逻辑"
           fi
           echo "use_arch_mode=$USE_ARCH_MODE" >> $GITHUB_OUTPUT
 
-      - name: 解析架构
+      - name: 解析设备架构
         id: parse-model
         if: ${{ !steps.parse-input.outputs.use_arch_mode }}
         run: |
           MODEL_INPUT="${{ github.event.inputs.Model }}"
           if [ ! -f "scripts/Models" ]; then
-            echo "::error::架构映射文件 scripts/Models 不存在"
+            echo "::error::架构映射文件不存在"
             exit 1
           fi
           FOUND_ARCH=""
@@ -81,9 +76,7 @@ jobs:
             [ -z "$line_clean" ] && continue
             
             IFS=':' read -ra parts <<< "$line_clean"
-            if [ ${#parts[@]} -ne 2 ]; then
-              continue
-            fi
+            if [ ${#parts[@]} -ne 2 ]; then continue; fi
             
             devices=$(echo "${parts[0]}" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             target_arch=$(echo "${parts[1]}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
@@ -91,7 +84,7 @@ jobs:
             while read -r device; do
               if [ "$device" == "$MODEL_INPUT" ]; then
                 if [ -n "$FOUND_ARCH" ]; then
-                  echo "::error::设备 '$MODEL_INPUT' 在多个架构中定义"
+                  echo "::error::设备重复定义"
                   exit 1
                 fi
                 FOUND_ARCH="$target_arch"
@@ -99,87 +92,43 @@ jobs:
             done <<< "$devices"
           done < scripts/Models
           
-          if [ -z "$FOUND_ARCH" ]; then
-            echo "::error::未找到设备 '$MODEL_INPUT' 对应的架构"
-            exit 1
-          fi
+          [ -z "$FOUND_ARCH" ] && echo "::error::未找到对应架构" && exit 1
           echo "arch=$FOUND_ARCH" >> $GITHUB_OUTPUT
-          sanitized_model=$(echo "$MODEL_INPUT" | tr ' ' '-')
-          echo "model_name=$sanitized_model" >> $GITHUB_OUTPUT
+          echo "model_name=$(echo "$MODEL_INPUT" | tr ' ' '-')" >> $GITHUB_OUTPUT
 
-      - name: 构建矩阵
+      - name: 生成构建矩阵
         id: set-matrix
-        env:
-          TARGET_ARCHS: ${{ steps.parse-input.outputs.archs || steps.parse-model.outputs.arch }}
         run: |
-          MAIN_REPO="https://github.com/somemoo/OpenWrt-packages"
-          ALT_REPO="https://github.com/kiddin9/kwrt-packages"
-          MAIN_BRANCH="lede"
-          ALT_BRANCH="main"
-          PKG_ARRAY=()
-          USE_BUILD_FILE=false
-
           if ${{ steps.parse-input.outputs.use_arch_mode }}; then
-            IFS=' ' read -ra ARCH_ARRAY <<< "$TARGET_ARCHS"
-            PACKAGE_INPUT="${{ github.event.inputs.Package }}"
-            if [ -n "$PACKAGE_INPUT" ]; then
-              IFS=',; ' read -ra PKG_ARRAY <<< "$PACKAGE_INPUT"
-            else
-              while IFS= read -r line; do
-                [[ "$line" =~ ^[[:space:]]*# ]] || [[ -z "${line// }" ]] && continue
-                IFS=',; ' read -ra pkgs <<< "$line"
-                PKG_ARRAY+=("${pkgs[@]}")
-              done < Build-IPK
-            fi
+            IFS=' ' read -ra ARCH_ARRAY <<< "${{ steps.parse-input.outputs.archs }}"
+            PKG_SOURCE="${{ github.event.inputs.Package }}"
+            [[ -z "$PKG_SOURCE" ]] && PKG_SOURCE=$(grep -vE '^#|^$' Build-IPK | tr '\n' ' ')
           else
-            ARCH_ARRAY=("$TARGET_ARCHS")
-            PACKAGE_INPUT="${{ github.event.inputs.Package }}"
-            if [ -n "$PACKAGE_INPUT" ]; then
-              IFS=',; ' read -ra PKG_ARRAY <<< "$PACKAGE_INPUT"
-            elif [ -f "Build-IPK" ]; then
-              while IFS= read -r line; do
-                [[ "$line" =~ ^[[:space:]]*# ]] || [[ -z "${line// }" ]] && continue
-                IFS=',; ' read -ra pkgs <<< "$line"
-                PKG_ARRAY+=("${pkgs[@]}")
-              done < Build-IPK
-            fi
+            ARCH_ARRAY=("${{ steps.parse-model.outputs.arch }}")
+            PKG_SOURCE="${{ github.event.inputs.Package }}"
+            [[ -z "$PKG_SOURCE" ]] && PKG_SOURCE=$(grep -vE '^#|^$' Build-IPK | tr '\n' ' ')
           fi
-
-          git clone -b $MAIN_BRANCH --depth=1 $MAIN_REPO OpenWrt-packages
-          git clone -b $ALT_BRANCH --depth=1 $ALT_REPO OpenWrt-packages-alt
-
-          declare -a valid_pkgs repo_urls branches arch_list
+          
+          IFS=',; ' read -ra PKG_ARRAY <<< "$PKG_SOURCE"
+          git clone -b lede --depth=1 https://github.com/somemoo/OpenWrt-packages
+          git clone -b main --depth=1 https://github.com/kiddin9/kwrt-packages
+          
+          declare -a matrix_entries
           for arch in "${ARCH_ARRAY[@]}"; do
             for pkg in "${PKG_ARRAY[@]}"; do
               if [ -d "OpenWrt-packages/$pkg" ]; then
-                valid_pkgs+=("$pkg")
-                repo_urls+=("$MAIN_REPO")
-                branches+=("$MAIN_BRANCH")
-                arch_list+=("$arch")
+                matrix_entries+=("{\"target\":\"$pkg\",\"repo_url\":\"https://github.com/somemoo/OpenWrt-packages\",\"branch\":\"lede\",\"arch\":\"$arch\"}")
               elif [ -d "OpenWrt-packages-alt/$pkg" ]; then
-                valid_pkgs+=("$pkg")
-                repo_urls+=("$ALT_REPO")
-                branches+=("$ALT_BRANCH")
-                arch_list+=("$arch")
-              else
-                echo "::warning::跳过不存在的包: $pkg"
+                matrix_entries+=("{\"target\":\"$pkg\",\"repo_url\":\"https://github.com/kiddin9/kwrt-packages\",\"branch\":\"main\",\"arch\":\"$arch\"}")
               fi
             done
           done
-
-          [ ${#valid_pkgs[@]} -eq 0 ] && echo "::error::没有有效的包可构建" && exit 1
-
-          matrix_json=$(jq -c -n \
-            --argjson pkgs "$(printf '%s\n' "${valid_pkgs[@]}" | jq -R . | jq -s .)" \
-            --argjson urls "$(printf '%s\n' "${repo_urls[@]}" | jq -R . | jq -s .)" \
-            --argjson brchs "$(printf '%s\n' "${branches[@]}" | jq -R . | jq -s .)" \
-            --argjson archs "$(printf '%s\n' "${arch_list[@]}" | jq -R . | jq -s .)" \
-            '[$archs as $a | range(0; ($pkgs|length)) as $i | {target: $pkgs[$i], repo_url: $urls[$i], branch: $brchs[$i], arch: $a[$i]}]')
-
-          echo "matrix=$matrix_json" >> $GITHUB_OUTPUT
+          
+          [[ ${#matrix_entries[@]} -eq 0 ]] && echo "::error::无有效包" && exit 1
+          echo "matrix=[$(IFS=,; echo "${matrix_entries[*]}")]" >> $GITHUB_OUTPUT
 
   build:
-    name: 构建 ${{ matrix.target }} (${{ matrix.arch }})
+    name: Build ${{ matrix.target }} (${{ matrix.arch }})
     runs-on: ubuntu-latest
     needs: matrix
     strategy:
