@@ -27,34 +27,15 @@ jobs:
     if: github.event.repository.owner.id == github.event.sender.id || !github.event.sender.id
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
-      arch: ${{ steps.parse-model.outputs.arch || steps.parse-arch.outputs.arch }}
+      arch: ${{ steps.parse-model.outputs.arch }}
       model_name: ${{ steps.parse-model.outputs.model_name }}
     
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
 
-      - name: 解析用户架构输入
-        id: parse-arch
-        if: ${{ github.event.inputs.Arch != '' }}
-        run: |
-          ARCH_INPUT="${{ github.event.inputs.Arch }}"
-          cleaned_arch=$(echo "$ARCH_INPUT" | tr ',;' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '\n' ' ')
-          IFS=' ' read -ra ARCH_ARRAY <<< "$cleaned_arch"
-          
-          for arch in "${ARCH_ARRAY[@]}"; do
-            if [[ ! "$arch" =~ ^[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+$ ]]; then
-              echo "::error::无效架构格式: $arch，应为类似x86/64的格式"
-              exit 1
-            fi
-          done
-          
-          echo "arch=${ARCH_ARRAY}" >> $GITHUB_OUTPUT
-          echo "arch_array=${ARCH_ARRAY[*]}" >> $GITHUB_OUTPUT
-
-      - name: 解析设备架构
+      - name: 解析架构
         id: parse-model
-        if: ${{ github.event.inputs.Arch == '' }}
         run: |
           MODEL_INPUT="${{ github.event.inputs.Model }}"
           
@@ -99,8 +80,9 @@ jobs:
       - name: 构建矩阵
         id: set-matrix
         env:
-          TARGET_ARCH: ${{ steps.parse-model.outputs.arch || fromJson(steps.parse-arch.outputs.arch_array) }}
+          TARGET_ARCH: ${{ steps.parse-model.outputs.arch }}
         run: |
+          PACKAGE_INPUT="${{ github.event.inputs.Package }}"
           MAIN_REPO="https://github.com/somemoo/OpenWrt-packages"
           ALT_REPO="https://github.com/kiddin9/kwrt-packages"
           MAIN_BRANCH="lede"
@@ -108,40 +90,19 @@ jobs:
           PKG_ARRAY=()
           USE_BUILD_FILE=false
 
-          if [ -n "${{ github.event.inputs.Arch }}" ]; then
-            IFS=' ' read -ra ARCH_ARRAY <<< "${{ steps.parse-arch.outputs.arch_array }}"
-          else
-            ARCH_ARRAY=("$TARGET_ARCH")
-          fi
-
-          if [ -n "${{ github.event.inputs.Package }}" ]; then
-            echo "::notice::使用手动输入的包列表"
-            IFS=',; ' read -ra PKG_ARRAY <<< "${{ github.event.inputs.Package }}"
-          elif [ -n "${{ github.event.inputs.Arch }}" ]; then
-            if [ -f "Build-IPK" ] && [ -s "Build-IPK" ]; then
-              echo "::notice::使用Build-IPK文件内容"
-              while IFS= read -r line; do
-                [[ "$line" =~ ^[[:space:]]*# ]] || [[ -z "${line// }" ]] && continue
-                IFS=',; ' read -ra pkgs <<< "$line"
-                PKG_ARRAY+=("${pkgs[@]}")
-              done < Build-IPK
-            else
-              echo "::error::Arch有输入但Package和Build-IPK均为空"
-              exit 1
-            fi
-          else
-            if [ -f "Build-IPK" ]; then
-              declare -a tmp_pkgs
-              while IFS= read -r line; do
-                [[ "$line" =~ ^[[:space:]]*# ]] || [[ -z "${line// }" ]] && continue
-                IFS=',; ' read -ra pkgs <<< "$line"
-                for pkg in "${pkgs[@]}"; do
-                  clean_pkg=$(echo "$pkg" | xargs)
-                  [ -n "$clean_pkg" ] && tmp_pkgs+=("$clean_pkg")
-                done
-              done < Build-IPK
-              [ ${#tmp_pkgs[@]} -gt 0 ] && PKG_ARRAY=("${tmp_pkgs[@]}") && USE_BUILD_FILE=true
-            fi
+          if [ -n "$PACKAGE_INPUT" ]; then
+            IFS=',; ' read -ra PKG_ARRAY <<< "$PACKAGE_INPUT"
+          elif [ -f "Build-IPK" ]; then
+            declare -a tmp_pkgs
+            while IFS= read -r line; do
+              [[ "$line" =~ ^[[:space:]]*# ]] || [[ -z "${line// }" ]] && continue
+              IFS=',; ' read -ra pkgs <<< "$line"
+              for pkg in "${pkgs[@]}"; do
+                clean_pkg=$(echo "$pkg" | xargs)
+                [ -n "$clean_pkg" ] && tmp_pkgs+=("$clean_pkg")
+              done
+            done < Build-IPK
+            [ ${#tmp_pkgs[@]} -gt 0 ] && PKG_ARRAY=("${tmp_pkgs[@]}") && USE_BUILD_FILE=true
           fi
 
           git clone -b $MAIN_BRANCH --depth=1 $MAIN_REPO OpenWrt-packages
@@ -164,14 +125,21 @@ jobs:
 
           [ ${#valid_pkgs[@]} -eq 0 ] && echo "::error::没有有效的包可构建" && exit 1
 
-          matrix_entries=()
-          for arch in "${ARCH_ARRAY[@]}"; do
-            for pkg in "${valid_pkgs[@]}"; do
-              matrix_entries+=("{\"target\":\"$pkg\",\"arch\":\"$arch\"}")
-            done
-          done
-          
-          matrix_json=$(echo "[${matrix_entries[@]}]" | jq -c 'split(",") | map(fromjson)')
+          matrix_json=$(jq -n \
+            --argjson pkgs "$(printf '%s\n' "${valid_pkgs[@]}" | jq -R . | jq -s .)" \
+            --argjson urls "$(printf '%s\n' "${repo_urls[@]}" | jq -R . | jq -s .)" \
+            --argjson brchs "$(printf '%s\n' "${branches[@]}" | jq -R . | jq -s .)" \
+            --arg arch "$TARGET_ARCH" \
+            '[
+              range(0; ($pkgs|length)) as $i |
+              {
+                target: $pkgs[$i],
+                repo_url: $urls[$i],
+                branch: $brchs[$i],
+                arch: $arch
+              }
+            ]' | jq -c .)
+
           echo "matrix=$matrix_json" >> $GITHUB_OUTPUT
 
   build:
@@ -183,7 +151,7 @@ jobs:
         include: ${{ fromJson(needs.matrix.outputs.matrix) }}
       fail-fast: false
     env:
-      arch_path: ${{ matrix.arch }}
+      arch_path: ${{ fromJson(needs.matrix.outputs.arch) }}
       model_name: ${{ needs.matrix.outputs.model_name }}
 
     steps:
