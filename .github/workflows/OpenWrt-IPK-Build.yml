@@ -204,6 +204,8 @@ jobs:
 
           ./scripts/feeds update -a
           ./scripts/feeds install ${{ matrix.target }}
+          rm -rf feeds/packages/lang/golang
+          git clone https://github.com/sbwml/packages_lang_golang -b 24.x feeds/packages/lang/golang
           echo "CONFIG_PACKAGE_${{ matrix.target }}=y" >> .config
 
       - name: 下载依赖
