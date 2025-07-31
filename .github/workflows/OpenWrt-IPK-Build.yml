@@ -26,16 +26,7 @@ jobs:
         id: extract
         run: |
           git clone --depth=1 ${{ github.event.inputs.PluginRepo }} plugin-source
-          # 优先根目录 Makefile
-          PLUGIN_NAME=$(grep -m1 '^PKG_NAME:=' plugin-source/Makefile | cut -d'=' -f2 | xargs)
-          # 如果根目录没有，再去子目录找（备用）
-          if [ -z "$PLUGIN_NAME" ]; then
-            PLUGIN_NAME=$(grep -m1 '^PKG_NAME:=' plugin-source/*/Makefile | cut -d'=' -f2 | xargs)
-          fi
-          if [ -z "$PLUGIN_NAME" ]; then
-            echo "::error::无法从 Makefile 中提取插件名"
-            exit 1
-          fi
+          PLUGIN_NAME=$(basename ${{ github.event.inputs.PluginRepo }} | sed 's/.*\///')
           echo "PLUGIN_NAME=$PLUGIN_NAME" >> $GITHUB_OUTPUT
 
       - name: 下载 SDK
