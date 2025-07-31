@@ -35,3 +35,5 @@ HiWiFi HC5962: ramips/mt7621
 
 # 树莓派系列
 Raspberry Pi 4B: bcm27xx/bcm2711
+
+H3C NX30 Pro:mediatek/filogic
