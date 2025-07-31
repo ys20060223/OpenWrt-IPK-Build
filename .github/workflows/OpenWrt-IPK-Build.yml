@@ -29,12 +29,13 @@ jobs:
           PLUGIN_NAME=$(basename ${{ github.event.inputs.PluginRepo }} | sed 's/.*\///')
           echo "PLUGIN_NAME=$PLUGIN_NAME" >> $GITHUB_OUTPUT
 
-      - name: 下载 SDK
+      - name: 下载并解压 SDK
         run: |
           SDK_URL="https://downloads.immortalwrt.org/releases/24.10.2/targets/mediatek/filogic/immortalwrt-sdk-24.10.2-mediatek-filogic_gcc-13.3.0_musl.Linux-x86_64.tar.zst"
           wget "$SDK_URL"
           tar -I 'zstd -d' -xf immortalwrt-sdk-*.tar.zst
-          mv immortalwrt-sdk-* OpenWrt-sdk
+          SDK_DIR=$(tar -tf immortalwrt-sdk-*.tar.zst | head -1 | cut -f1 -d'/')
+          mv "$SDK_DIR" OpenWrt-sdk
 
       - name: 复制插件到 SDK
         run: |
