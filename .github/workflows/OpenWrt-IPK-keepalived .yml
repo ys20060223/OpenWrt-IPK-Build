@@ -1,112 +1,116 @@
-name: Build-eBPF-Keepalived-for-NX30Pro
+name: Build-eBPF-Keepalived-Plugin
 
 on:
-  # 工作流调度事件 - 允许在GitHub UI中手动触发
   workflow_dispatch:
     inputs:
-      skip_tests:
-        description: '跳过测试步骤？'
+      PluginRepo:
+        description: 'Keepalived 仓库地址 (默认: https://github.com/acassen/keepalived)'
+        required: false
+        default: 'https://github.com/acassen/keepalived'
+        type: string
+      PluginBranch:
+        description: 'Keepalived 分支/版本 (默认: v2.2.8)'
+        required: false
+        default: 'v2.2.8'
+        type: string
+      TargetArch:
+        description: '目标架构 (如 mediatek/filogic, x86/64 等)'
+        required: true
+        type: string
+      OpenWrtVersion:
+        description: 'OpenWrt 版本 (如 24.10.2)'
+        required: true
+        type: string
+      SkipTests:
+        description: '跳过测试步骤'
         required: false
         default: 'false'
         type: boolean
-      verbose:
-        description: '启用详细输出'
+      VerboseOutput:
+        description: '启用详细编译输出'
         required: false
         default: 'false'
         type: boolean
-  
-  # 代码推送事件 - 当代码推送到main分支时触发
-  push:
-    branches: [main]
 
 env:
-  TARGET_ARCH: "mediatek/filogic"
-  OPENWRT_VERSION: "24.10.2"
-  SDK_URL: "https://downloads.immortalwrt.org/releases/24.10.2/targets/mediatek/filogic/immortalwrt-sdk-24.10.2-mediatek-filogic_gcc-13.3.0_musl.Linux-x86_64.tar.zst"
+  TZ: Asia/Shanghai
+  WORKSPACE: /github/workspace
 
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 90
+    container:
+      image: ubuntu:22.04
+      options: --privileged  # 需要特权模式访问内核功能
     
     steps:
-      - name: 检查代码
-        uses: actions/checkout@v4
-        
-      - name: 设置工作空间
-        run: |
-          mkdir -p $HOME/workspace
-          cd $HOME/workspace
-          echo "WORKSPACE=$HOME/workspace" >> $GITHUB_ENV
-          echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE" >> $GITHUB_ENV
-
       - name: 安装基础依赖
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             build-essential git g++ gawk gcc-multilib gettext libncurses5-dev libssl-dev \
-            python3 python3-distutils rsync unzip zstd zlib1g-dev jq aria2 curl ca-certificates \
+            python3 rsync unzip zstd zlib1g-dev jq aria2 curl ca-certificates \
             libelf-dev clang llvm libbpf-dev libnl-3-dev libnl-genl-3-dev libnl-route-3-dev \
-            bison flex libcap-dev libpcre2-dev libpam-dev pkg-config libjson-c-dev libc-ares-dev \
+            bison flex libcap-dev libpam-dev pkg-config libjson-c-dev libc-ares-dev \
             libdbus-1-dev liblz4-dev liblzma-dev libsnmp-dev libmnl-dev libprotobuf-c-dev \
             libcrypt-dev libnftnl-dev libreadline-dev libsystemd-dev liburcu-dev libxml2-dev \
             automake autoconf autoconf-archive libtool
 
-      - name: 克隆 Keepalived (v2.2.8)
+      - name: 克隆 Keepalived 仓库
         run: |
-          cd ${{ env.WORKSPACE }}
-          git clone --depth=1 --branch v2.2.8 https://github.com/acassen/keepalived.git keepalived-source
+          git clone --depth=1 --branch ${{ github.event.inputs.PluginBranch }} ${{ github.event.inputs.PluginRepo }} keepalived-source
           
-          # 启用BPF编译选项
+          # 应用关键补丁
           sed -i '/AC_ARG_ENABLE(\[bpf\],/,/fi$/ {
               s/\[enable_bpf=no\]/[enable_bpf=yes]/;
               s/if test "$enable_bpf" = yes;/if test "$enable_bpf" = yes; then\n  AC_DEFINE([HAVE_BPF], [1], [Enable BPF support])\n/;
           }' keepalived-source/configure.ac
           
-          # 添加Mediatek平台兼容性修复
+          # Mediatek 平台兼容性修复
           sed -i '/#include <linux\/if_packet.h>/a #ifndef __aligned_u64\n#define __aligned_u64 __u64 __attribute__((aligned(8)))\n#endif' keepalived-source/keepalived/check/check_bpf.c
           
-          echo "KEEPALIVED_SRC=${{ env.WORKSPACE }}/keepalived-source" >> $GITHUB_ENV
+          echo "KEEPALIVED_DIR=$(pwd)/keepalived-source" >> $GITHUB_ENV
 
       - name: 下载并解压 SDK
         run: |
-          cd ${{ env.WORKSPACE }}
-          aria2c -x 16 -s 16 "${{ env.SDK_URL }}" -o sdk.tar.zst
+          # 构建 SDK URL
+          ARCH_SLUG=$(echo "${{ github.event.inputs.TargetArch }}" | sed 's/\//_/g')
+          SDK_URL="https://downloads.immortalwrt.org/releases/${{ github.event.inputs.OpenWrtVersion }}/targets/${{ github.event.inputs.TargetArch }}/immortalwrt-sdk-${{ github.event.inputs.OpenWrtVersion }}-$ARCH_SLUG""_gcc-13.3.0_musl.Linux-x86_64.tar.zst"
+          echo "SDK_URL=$SDK_URL" >> $GITHUB_ENV
+          
+          # 下载并解压 SDK
+          aria2c -x 16 -s 16 "$SDK_URL" -o sdk.tar.zst
           tar -I 'zstd -d' -xf sdk.tar.zst --strip-components=1
-          echo "SDK_DIR=${{ env.WORKSPACE }}" >> $GITHUB_ENV
-          echo "STAGING_DIR=${{ env.WORKSPACE }}/staging_dir" >> $GITHUB_ENV
+          echo "SDK_DIR=$(pwd)" >> $GITHUB_ENV
+          echo "STAGING_DIR=$(pwd)/staging_dir" >> $GITHUB_ENV
 
-      - name: 配置编译环境
+      - name: 配置 eBPF 编译环境
         run: |
           cd ${{ env.SDK_DIR }}
           
-          # 设置临时目录
-          export TMPDIR=${{ env.WORKSPACE }}/tmp
-          mkdir -p $TMPDIR
-          
-          # 更新feeds
+          # 更新 feeds 并安装依赖
           ./scripts/feeds update -a
           ./scripts/feeds install -a
           ./scripts/feeds install libbpf bpftool libnl-core libnl-genl libnl-route
           
-          # 创建Keepalived包目录
+          # 创建 Keepalived 包
           mkdir -p package/network/utils/keepalived
-          cp -r ${{ env.KEEPALIVED_SRC }}/* package/network/utils/keepalived/
+          cp -r ${{ env.KEEPALIVED_DIR }}/* package/network/utils/keepalived/
           
-          # 创建自定义Makefile
+          # 创建优化的 Makefile
           cat > package/network/utils/keepalived/Makefile <<'EOL'
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=keepalived
-PKG_VERSION:=2.2.8
+PKG_VERSION:=${{ github.event.inputs.PluginBranch | replace('v','') }}
 PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_URL:=https://github.com/acassen/keepalived.git
-PKG_SOURCE_VERSION:=v$(PKG_VERSION)
+PKG_SOURCE_URL:=${{ github.event.inputs.PluginRepo }}
+PKG_SOURCE_VERSION:=${{ github.event.inputs.PluginBranch }}
 PKG_MIRROR_HASH:=skip
 
-PKG_MAINTAINER:=Alexandre Cassen <acassen@gmail.com>
+PKG_MAINTAINER:=Keepalived eBPF Builder
 PKG_LICENSE:=GPL-2.0
 PKG_LICENSE_FILES:=COPYING
 
@@ -118,14 +122,13 @@ include $(INCLUDE_DIR)/package.mk
 define Package/keepalived
   SECTION:=net
   CATEGORY:=Network
-  TITLE:=Failover and monitoring daemon for LVS clusters
+  TITLE:=Failover and monitoring daemon with eBPF support
   URL:=https://www.keepalived.org/
   DEPENDS:=+libnl-core +libnl-genl +libnl-route +libbpf +bpftool +kmod-sched-bpf
 endef
 
 define Package/keepalived/description
-  Keepalived provides frameworks for both load balancing and high-availability.
-  This version includes eBPF support for NX30Pro routers.
+  Enhanced Keepalived with eBPF support for real-time traffic monitoring.
 endef
 
 CONFIGURE_ARGS += \
@@ -151,7 +154,7 @@ EOL
           # 生成默认配置
           make defconfig
           
-          # 启用必要选项
+          # 启用必要内核选项
           ./scripts/config --set-val CONFIG_PACKAGE_keepalived y
           ./scripts/config --set-val CONFIG_PACKAGE_libbpf y
           ./scripts/config --set-val CONFIG_PACKAGE_bpftool y
@@ -170,11 +173,11 @@ EOL
       - name: 编译工具链和依赖
         run: |
           cd ${{ env.SDK_DIR }}
-          make tools/compile -j$(nproc) V=${{ github.event.inputs.verbose && 's' || 'sc' }}
-          make toolchain/compile -j$(nproc) V=${{ github.event.inputs.verbose && 's' || 'sc' }}
-          make package/libnl/compile -j$(nproc) V=${{ github.event.inputs.verbose && 's' || 'sc' }}
-          make package/libbpf/compile -j$(nproc) V=${{ github.event.inputs.verbose && 's' || 'sc' }}
-          make package/bpftool/compile -j$(nproc) V=${{ github.event.inputs.verbose && 's' || 'sc' }}
+          make tools/compile -j$(nproc) V=${{ github.event.inputs.VerboseOutput && 's' || 'sc' }}
+          make toolchain/compile -j$(nproc) V=${{ github.event.inputs.VerboseOutput && 's' || 'sc' }}
+          make package/libnl/compile -j$(nproc) V=${{ github.event.inputs.VerboseOutput && 's' || 'sc' }}
+          make package/libbpf/compile -j$(nproc) V=${{ github.event.inputs.VerboseOutput && 's' || 'sc' }}
+          make package/bpftool/compile -j$(nproc) V=${{ github.event.inputs.VerboseOutput && 's' || 'sc' }}
 
       - name: 编译 Keepalived
         run: |
@@ -183,10 +186,10 @@ EOL
           # 重新生成配置
           (cd package/network/utils/keepalived && autoreconf -fvi)
           
-          # 开始编译
-          make package/network/utils/keepalived/compile -j$(nproc) V=${{ github.event.inputs.verbose && 's' || 'sc' }} 2>&1 | tee build.log
+          # 编译并记录日志
+          make package/network/utils/keepalived/compile -j$(nproc) V=${{ github.event.inputs.VerboseOutput && 's' || 'sc' }} 2>&1 | tee build.log
           
-          # 验证BPF支持
+          # 验证 BPF 支持
           PKG_BUILD_DIR=$(find build_dir/target-*/keepalived-* -maxdepth 0 -type d)
           if strings $PKG_BUILD_DIR/keepalived/keepalived | grep -q "bpf"; then
             echo "✅ eBPF支持验证成功"
@@ -197,15 +200,19 @@ EOL
           fi
 
       - name: 运行测试 (可选)
-        if: ${{ !github.event.inputs.skip_tests }}
+        if: ${{ !github.event.inputs.SkipTests }}
         run: |
           cd ${{ env.SDK_DIR }}
           echo "运行基本测试..."
-          # 简单测试二进制文件是否包含BPF支持
-          if $PKG_BUILD_DIR/keepalived/keepalived --version | grep -q "BPF"; then
-            echo "✅ 版本检查通过"
+          
+          # 测试二进制文件
+          $PKG_BUILD_DIR/keepalived/keepalived --version
+          
+          # 检查BPF支持
+          if $PKG_BUILD_DIR/keepalived/keepalived --version | grep -q "bpf"; then
+            echo "✅ BPF支持已启用"
           else
-            echo "::error::二进制文件中未检测到BPF支持"
+            echo "::error::BPF支持未启用"
             exit 1
           fi
 
@@ -221,18 +228,24 @@ EOL
           find bin -name "libnl-*.ipk" -exec cp -v {} artifacts/ \;
           find bin -name "kmod-sched-bpf*.ipk" -exec cp -v {} artifacts/ \;
           
-          # 创建安装脚本
+          # 创建智能安装脚本
           cat > artifacts/install.sh <<'EOL'
 #!/bin/sh
+set -e
+
 echo "正在安装 eBPF Keepalived..."
 opkg update
 
 # 安装顺序很重要
-opkg install libbpf*.ipk
-opkg install libnl-core*.ipk libnl-genl*.ipk libnl-route*.ipk
-opkg install bpftool*.ipk
-opkg install kmod-sched-bpf*.ipk
-opkg install keepalived*.ipk
+for pkg in libbpf libnl-core libnl-genl libnl-route bpftool kmod-sched-bpf keepalived; do
+  ipk_file=$(ls ${pkg}*.ipk 2>/dev/null | head -1)
+  if [ -n "$ipk_file" ]; then
+    echo "安装 $ipk_file"
+    opkg install $ipk_file
+  else
+    echo "警告: 未找到 $pkg 的安装包"
+  fi
+done
 
 echo -e "\n安装完成！验证："
 keepalived --version | grep -i "bpf" && echo "✅ eBPF支持已启用" || echo "❌ eBPF支持未启用"
@@ -244,6 +257,6 @@ EOL
       - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: keepalived-ebpf-nx30pro
+          name: keepalived-ebpf-${{ github.event.inputs.OpenWrtVersion }}-${{ github.event.inputs.TargetArch | replace('/', '-') }}
           path: ${{ env.SDK_DIR }}/artifacts/*
           retention-days: 7
