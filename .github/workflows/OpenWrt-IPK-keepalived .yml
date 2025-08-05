@@ -75,7 +75,7 @@ jobs:
           mkdir -p package/network/utils/keepalived
           cp -r ${{ env.KEEPALIVED_SRC }}/* package/network/utils/keepalived/
           
-          # 修改Makefile (关键修复)
+          # 创建自定义Makefile
           cat > package/network/utils/keepalived/Makefile <<'EOL'
 include $(TOPDIR)/rules.mk
 
@@ -152,8 +152,8 @@ EOL
       - name: 编译工具链和依赖
         run: |
           cd ${{ env.SDK_DIR }}
-          make tools/install -j$(nproc) V=sc
-          make toolchain/install -j$(nproc) V=sc
+          make tools/compile -j$(nproc) V=s
+          make toolchain/compile -j$(nproc) V=s
           make package/libnl/compile -j$(nproc) V=s
           make package/libbpf/compile -j$(nproc) V=s
           make package/bpftool/compile -j$(nproc) V=s
@@ -161,16 +161,18 @@ EOL
       - name: 编译 Keepalived
         run: |
           cd ${{ env.SDK_DIR }}
-          export PKG_BUILD_DIR=${{ env.SDK_DIR }}/build_dir/target-*/keepalived-*
           
-          # 修复编译环境
-          (cd package/network/utils/keepalived && autoreconf -fvi)
+          # 进入Keepalived目录并重新生成配置
+          cd package/network/utils/keepalived
+          autoreconf -fvi
+          cd ${{ env.SDK_DIR }}
           
           # 开始编译
           make package/network/utils/keepalived/compile -j$(nproc) V=s 2>&1 | tee build.log
           
           # 验证BPF支持
-          if strings $${PKG_BUILD_DIR}/keepalived/keepalived | grep -q "bpf"; then
+          PKG_BUILD_DIR=$(find build_dir/target-*/keepalived-* -maxdepth 0 -type d)
+          if strings $PKG_BUILD_DIR/keepalived/keepalived | grep -q "bpf"; then
             echo "✅ eBPF支持验证成功"
           else
             echo "::error::eBPF支持未在二进制中找到"
