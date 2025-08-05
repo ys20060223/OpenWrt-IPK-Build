@@ -1,72 +1,236 @@
-name: Build-Plugin-Auto-Detect-Name
+name: Build-eBPF-Keepalived-for-NX30Pro
 
 on:
   workflow_dispatch:
-    inputs:
-      PluginRepo:
-        description: '插件 GitHub 仓库地址（如 https://github.com/ys20060223/luci-app-overview-widgets1）'
-        required: true
-        type: string
+  push:
+    branches: [main]
 
 env:
-  TZ: Asia/Shanghai
+  TARGET_ARCH: "mediatek/filogic"
+  OPENWRT_VERSION: "24.10.2"
+  SDK_URL: "https://downloads.immortalwrt.org/releases/24.10.2/targets/mediatek/filogic/immortalwrt-sdk-24.10.2-mediatek-filogic_gcc-13.3.0_musl.Linux-x86_64.tar.zst"
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    
     steps:
-      - name: 安装依赖
+      - name: 清理工作空间
+        run: |
+          # 清理系统临时目录
+          sudo rm -rf /tmp/*
+          
+          # 清理APT缓存
+          sudo apt clean
+          
+          # 清理Docker缓存
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          
+          # 创建工作空间
+          mkdir -p $HOME/workspace
+          cd $HOME/workspace
+          echo "WORKSPACE=$HOME/workspace" >> $GITHUB_ENV
+
+      - name: 安装基础依赖
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -qq --no-install-recommends \
+          sudo apt-get install -y --no-install-recommends \
             build-essential git g++ gawk gcc-multilib gettext libncurses5-dev libssl-dev \
-            python3 rsync unzip zstd zlib1g-dev jq aria2
+            python3 python3-distutils rsync unzip zstd zlib1g-dev jq aria2 curl ca-certificates \
+            libelf-dev clang llvm libbpf-dev libnl-3-dev libnl-genl-3-dev bison flex \
+            libcap-dev libpam-dev pkg-config libjson-c-dev libc-ares-dev libdbus-1-dev \
+            liblz4-dev liblzma-dev libsnmp-dev libmnl-dev libprotobuf-c-dev libcrypt-dev \
+            libnftnl-dev libreadline-dev libsystemd-dev liburcu-dev libxml2-dev libssl3 \
+            automake autoconf libtool
 
-      - name: 克隆插件仓库并提取插件名
-        id: extract
+      - name: 克隆 Keepalived (带直接修改)
         run: |
-          git clone --depth=1 ${{ github.event.inputs.PluginRepo }} plugin-source
-          PLUGIN_NAME=$(basename ${{ github.event.inputs.PluginRepo }} | sed 's/.*\///')
-          echo "PLUGIN_NAME=$PLUGIN_NAME" >> $GITHUB_OUTPUT
+          cd ${{ env.WORKSPACE }}
+          git clone --depth=1 --branch v2.2.8 https://github.com/acassen/keepalived.git keepalived-source
+          
+          # 直接修改 configure.ac 文件 (替代补丁)
+          sed -i '/AC_ARG_ENABLE(\[bpf\],/,/fi$/ {
+              s/\[enable_bpf=no\]/[enable_bpf=yes]/;
+              s/if test "$enable_bpf" = yes;/if test "$enable_bpf" = yes; then\n  AC_DEFINE([HAVE_BPF], [1], [Enable BPF support])\n/;
+          }' keepalived-source/configure.ac
+          
+          # 添加 Mediatek 平台兼容性修复
+          sed -i '/#include <linux\/if_packet.h>/a #ifndef __aligned_u64\n#define __aligned_u64 __u64 __attribute__((aligned(8)))\n#endif' keepalived-source/keepalived/check/check_bpf.c
+          
+          echo "KEEPALIVED_DIR=keepalived-source" >> $GITHUB_ENV
 
       - name: 下载并解压 SDK
         run: |
-          SDK_URL="https://downloads.immortalwrt.org/releases/24.10.2/targets/mediatek/filogic/immortalwrt-sdk-24.10.2-mediatek-filogic_gcc-13.3.0_musl.Linux-x86_64.tar.zst"
-          wget "$SDK_URL"
-          tar -I 'zstd -d' -xf immortalwrt-sdk-*.tar.zst
-          SDK_DIR=$(tar -tf immortalwrt-sdk-*.tar.zst | head -1 | cut -f1 -d'/')
+          cd ${{ env.WORKSPACE }}
+          aria2c -x 16 -s 16 "${{ env.SDK_URL }}" -o sdk.tar.zst
+          tar -I 'zstd -d' -xf sdk.tar.zst
+          SDK_DIR=$(tar -tf sdk.tar.zst | head -1 | cut -f1 -d"/")
           mv "$SDK_DIR" OpenWrt-sdk
+          
+          # 修复所有权问题
+          sudo chown -R $USER:$(id -gn) OpenWrt-sdk
+          echo "SDK_DIR=${{ env.WORKSPACE }}/OpenWrt-sdk" >> $GITHUB_ENV
+          echo "STAGING_DIR=${{ env.WORKSPACE }}/OpenWrt-sdk/staging_dir" >> $GITHUB_ENV
 
-      - name: 复制插件到 SDK
+      - name: 配置编译环境 (无补丁)
         run: |
-          cd OpenWrt-sdk
-          cp -r ../plugin-source package/${{ steps.extract.outputs.PLUGIN_NAME }}
-
-      - name: 安装 feeds
-        run: |
-          cd OpenWrt-sdk
+          cd ${{ env.SDK_DIR }}
+          
+          # 设置安全的工作目录
+          export TMPDIR=${{ env.WORKSPACE }}/tmp
+          mkdir -p $TMPDIR
+          
+          # 更新 feeds
           ./scripts/feeds update -a
           ./scripts/feeds install -a
+          
+          # 安装 eBPF 依赖
+          ./scripts/feeds install libbpf bpftool libnl-core libnl-genl
+          
+          # 创建 Keepalived 包
+          mkdir -p package/network/utils/keepalived
+          cp -r ${{ env.WORKSPACE }}/keepalived-source/* package/network/utils/keepalived/
+          
+          # 直接修改 Makefile
+          sed -i 's/--disable-systemd/--enable-bpf --with-bpf-lib --disable-systemd/' package/network/utils/keepalived/Makefile
+          sed -i 's/DEPENDS := /DEPENDS := +libbpf +bpftool +libnl-core +libnl-genl /' package/network/utils/keepalived/Makefile
 
-      - name: 预配置
+      - name: 配置内核选项
         run: |
-          cd OpenWrt-sdk
-          echo "CONFIG_PACKAGE_${{ steps.extract.outputs.PLUGIN_NAME }}=m" >> .config
+          cd ${{ env.SDK_DIR }}
+          
+          # 创建新的配置文件
+          cat > .config <<EOL
+CONFIG_TARGET_mediatek=y
+CONFIG_TARGET_mediatek_filogic=y
+CONFIG_LINUX_5_15=y
+CONFIG_PACKAGE_keepalived=y
+CONFIG_PACKAGE_libbpf=y
+CONFIG_PACKAGE_bpftool=y
+CONFIG_PACKAGE_libnl-core=y
+CONFIG_PACKAGE_libnl-genl=y
+CONFIG_BPF=y
+CONFIG_BPF_SYSCALL=y
+CONFIG_BPF_JIT=y
+CONFIG_BPF_JIT_ALWAYS_ON=y
+CONFIG_HAVE_EBPF_JIT=y
+CONFIG_BPF_EVENTS=y
+CONFIG_FTRACE_SYSCALLS=y
+CONFIG_NET_CLS_BPF=y
+CONFIG_NET_ACT_BPF=y
+CONFIG_BPF_STREAM_PARSER=y
+CONFIG_LWTUNNEL_BPF=y
+CONFIG_DEBUG_INFO_BTF=y
+CONFIG_KALLSYMS=y
+CONFIG_DEBUG_FS=y
+EOL
+          
+          # 应用配置
           make defconfig
+          
+          # 验证配置
+          echo "验证配置:"
+          grep CONFIG_BPF .config
+          grep CONFIG_PACKAGE_keepalived .config
 
-      - name: 编译插件
+      - name: 编译工具链和依赖
         run: |
-          cd OpenWrt-sdk
-          make package/${{ steps.extract.outputs.PLUGIN_NAME }}/compile -j$(nproc) V=s
+          cd ${{ env.SDK_DIR }}
+          
+          # 编译工具链
+          make tools/compile -j$(nproc) V=s
+          make toolchain/compile -j$(nproc) V=s
+          
+          # 编译核心依赖
+          make package/libnl/compile -j$(nproc) V=s
+          make package/libbpf/compile -j$(nproc) V=s
+          make package/bpftool/compile -j$(nproc) V=s
+
+      - name: 编译 Keepalived (带错误处理)
+        run: |
+          cd ${{ env.SDK_DIR }}
+          set -e
+          
+          # 创建编译日志目录
+          mkdir -p build-logs
+          
+          echo "开始编译 Keepalived..."
+          if ! make package/network/utils/keepalived/compile -j$(nproc) V=s 2>&1 | tee build-logs/keepalived.log; then
+            echo "::error::编译失败，分析错误..."
+            
+            # 分析常见错误
+            if grep -q "configure.ac" build-logs/keepalived.log; then
+              echo "发现配置问题，尝试重新生成配置..."
+              (cd package/network/utils/keepalived && autoreconf -fvi)
+              make package/network/utils/keepalived/compile -j$(nproc) V=s 2>&1 | tee build-logs/keepalived-retry.log
+            fi
+            
+            if grep -q "permission denied" build-logs/keepalived.log; then
+              echo "发现权限问题，调整所有权..."
+              sudo chown -R $USER:$(id -gn) .
+              make package/network/utils/keepalived/compile -j$(nproc) V=s 2>&1 | tee build-logs/keepalived-retry.log
+            fi
+            
+            # 如果仍然失败则退出
+            if [ ${PIPESTATUS[0]} -ne 0 ]; then
+              echo "::error::编译最终失败"
+              exit 1
+            fi
+          fi
+          
+          # 验证二进制
+          if strings build_dir/target-*/keepalived-*/keepalived/keepalived | grep -q "eBPF"; then
+            echo "✅ eBPF 支持验证成功"
+          else
+            echo "::error::eBPF 支持未在二进制中找到"
+            exit 1
+          fi
 
       - name: 收集产物
         run: |
-          cd OpenWrt-sdk
-          mkdir -p output
-          find bin/packages/ -name "*.ipk" -exec cp {} output/ \;
+          cd ${{ env.SDK_DIR }}
+          mkdir -p artifacts
+          
+          # 查找并复制所有相关 IPK
+          find bin -name "keepalived*.ipk" -exec cp -v {} artifacts/ \;
+          find bin -name "libbpf*.ipk" -exec cp -v {} artifacts/ \;
+          find bin -name "bpftool*.ipk" -exec cp -v {} artifacts/ \;
+          find bin -name "libnl*.ipk" -exec cp -v {} artifacts/ \;
+          find bin -name "kmod*.ipk" -exec cp -v {} artifacts/ \;
+          
+          # 创建安装脚本
+          cat > artifacts/install.sh <<'EOL'
+#!/bin/sh
+echo "正在安装 eBPF Keepalived..."
+opkg update
+
+# 设置安全安装目录
+INSTALL_DIR=/root/keepalived-ebpf
+mkdir -p $INSTALL_DIR
+mv *.ipk $INSTALL_DIR
+cd $INSTALL_DIR
+
+# 安装顺序很重要
+opkg install libbpf*.ipk
+opkg install libnl-core*.ipk libnl-genl*.ipk
+opkg install bpftool*.ipk
+opkg install kmod*.ipk
+opkg install keepalived*.ipk
+
+# 验证安装
+echo -e "\n安装完成！验证："
+keepalived --version | grep eBPF || echo "eBPF支持未启用"
+bpftool prog show || echo "bpftool未安装"
+EOL
+          
+          chmod +x artifacts/install.sh
+          
+          # 复制日志
+          cp build-logs/*.log artifacts/
 
       - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.extract.outputs.PLUGIN_NAME }}-mediatek-filogic
-          path: OpenWrt-sdk/output/
+          name: keepalived-ebpf-nx30pro
+          path: ${{ env.SDK_DIR }}/artifacts/*
