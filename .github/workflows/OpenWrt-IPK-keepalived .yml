@@ -1,33 +1,22 @@
-name: Build-eBPF-Keepalived-Plugin
+name: Build-eBPF-Keepalived-for-NX30Pro
 
 on:
-  workflow_dispatch:
-    inputs:
-      PluginRepo:
-        description: 'Keepalived 插件 GitHub 仓库地址（如 https://github.com/acassen/keepalived）'
-        required: true
-        type: string
-      TargetArch:
-        description: '目标架构 (如 mediatek/filogic, x86/64 等)'
-        required: true
-        type: string
-      OpenWrtVersion:
-        description: 'OpenWrt 版本 (如 24.10.2)'
-        required: true
-        type: string
+  workflow_dispatch:  # 手动触发
+  push:
+    branches:
+      - main
+    paths:
+      - 'build-keepalived.yml'  # 当此文件变更时自动触发
 
 env:
-  TZ: Asia/Shanghai
+  TARGET_ARCH: "mediatek/filogic"
+  OPENWRT_VERSION: "24.10.2"
 
 jobs:
   build:
     runs-on: ubuntu-latest
     container:
       image: ubuntu:22.04
-    strategy:
-      matrix:
-        arch: ["${{ github.event.inputs.TargetArch }}"]
-        version: ["${{ github.event.inputs.OpenWrtVersion }}"]
     
     steps:
       - name: 安装基础依赖
@@ -43,13 +32,13 @@ jobs:
 
       - name: 克隆 Keepalived 仓库
         run: |
-          git clone --depth=1 --branch v2.2.8 ${{ github.event.inputs.PluginRepo }} keepalived-source
+          git clone --depth=1 --branch v2.2.8 https://github.com/acassen/keepalived.git keepalived-source
           echo "KEEPALIVED_DIR=keepalived-source" >> $GITHUB_ENV
 
       - name: 下载并解压 SDK
         run: |
-          ARCH_PATH=$(echo ${{ matrix.arch }} | sed 's/\//\\\//g')
-          SDK_URL="https://downloads.immortalwrt.org/releases/${{ matrix.version }}/targets/${{ matrix.arch }}/immortalwrt-sdk-${{ matrix.version }}-${ARCH_PATH//\//_}_gcc-13.3.0_musl.Linux-x86_64.tar.zst"
+          ARCH_PATH=$(echo ${{ env.TARGET_ARCH }} | sed 's/\//\\\//g')
+          SDK_URL="https://downloads.immortalwrt.org/releases/${{ env.OPENWRT_VERSION }}/targets/${{ env.TARGET_ARCH }}/immortalwrt-sdk-${{ env.OPENWRT_VERSION }}-${ARCH_PATH//\//_}_gcc-13.3.0_musl.Linux-x86_64.tar.zst"
           echo "SDK_URL=$SDK_URL" >> $GITHUB_ENV
           
           aria2c -x 16 -s 16 "$SDK_URL" -o sdk.tar.zst
@@ -81,19 +70,21 @@ jobs:
           cd ${{ env.SDK_DIR }}
           
           # 启用内核 eBPF 支持
-          echo "CONFIG_BPF=y" >> .config
-          echo "CONFIG_BPF_SYSCALL=y" >> .config
-          echo "CONFIG_BPF_JIT=y" >> .config
-          echo "CONFIG_BPF_JIT_ALWAYS_ON=y" >> .config
-          echo "CONFIG_BPF_JIT_DEFAULT_ON=y" >> .config
-          echo "CONFIG_HAVE_EBPF_JIT=y" >> .config
-          echo "CONFIG_BPF_EVENTS=y" >> .config
-          echo "CONFIG_FTRACE_SYSCALLS=y" >> .config
-          echo "CONFIG_NET_CLS_BPF=y" >> .config
-          echo "CONFIG_NET_ACT_BPF=y" >> .config
-          echo "CONFIG_BPF_STREAM_PARSER=y" >> .config
-          echo "CONFIG_LWTUNNEL_BPF=y" >> .config
-          echo "CONFIG_DEBUG_INFO_BTF=y" >> .config
+          cat << EOF >> .config
+          CONFIG_BPF=y
+          CONFIG_BPF_SYSCALL=y
+          CONFIG_BPF_JIT=y
+          CONFIG_BPF_JIT_ALWAYS_ON=y
+          CONFIG_BPF_JIT_DEFAULT_ON=y
+          CONFIG_HAVE_EBPF_JIT=y
+          CONFIG_BPF_EVENTS=y
+          CONFIG_FTRACE_SYSCALLS=y
+          CONFIG_NET_CLS_BPF=y
+          CONFIG_NET_ACT_BPF=y
+          CONFIG_BPF_STREAM_PARSER=y
+          CONFIG_LWTUNNEL_BPF=y
+          CONFIG_DEBUG_INFO_BTF=y
+          EOF
           
           # 启用 Keepalived 和 eBPF 相关包
           echo "CONFIG_PACKAGE_keepalived=y" >> .config
@@ -137,8 +128,6 @@ jobs:
           find bin -name "libbpf*.ipk" -exec cp {} artifacts/ \;
           find bin -name "bpftool*.ipk" -exec cp {} artifacts/ \;
           find bin -name "libnl*.ipk" -exec cp {} artifacts/ \;
-          
-          # 复制内核模块
           find bin -name "kmod-*.ipk" -exec cp {} artifacts/ \;
           
           # 创建安装脚本
@@ -146,10 +135,17 @@ jobs:
           #!/bin/sh
           opkg update
           opkg install libbpf*.ipk
-          opkg install libnl*.ipk
+          opkg install libnl-core*.ipk libnl-genl*.ipk
           opkg install bpftool*.ipk
           opkg install kmod-*.ipk
           opkg install keepalived_*.ipk
+          
+          # 验证安装
+          echo "验证 eBPF 支持:"
+          keepalived --version | grep eBPF
+          
+          echo "检查 eBPF 程序:"
+          bpftool prog show
           EOL
           
           chmod +x artifacts/install.sh
@@ -157,5 +153,5 @@ jobs:
       - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: keepalived-ebpf-${{ matrix.version }}-${{ matrix.arch }}
+          name: keepalived-ebpf-nx30pro
           path: ${{ env.SDK_DIR }}/artifacts/*
