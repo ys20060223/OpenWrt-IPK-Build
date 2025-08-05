@@ -1,0 +1,72 @@
+name: Build-Plugin-Auto-Detect-Name
+
+on:
+  workflow_dispatch:
+    inputs:
+      PluginRepo:
+        description: '插件 GitHub 仓库地址（如 https://github.com/ys20060223/luci-app-overview-widgets1）'
+        required: true
+        type: string
+
+env:
+  TZ: Asia/Shanghai
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 安装依赖
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -qq --no-install-recommends \
+            build-essential git g++ gawk gcc-multilib gettext libncurses5-dev libssl-dev \
+            python3 rsync unzip zstd zlib1g-dev jq aria2
+
+      - name: 克隆插件仓库并提取插件名
+        id: extract
+        run: |
+          git clone --depth=1 ${{ github.event.inputs.PluginRepo }} plugin-source
+          PLUGIN_NAME=$(basename ${{ github.event.inputs.PluginRepo }} | sed 's/.*\///')
+          echo "PLUGIN_NAME=$PLUGIN_NAME" >> $GITHUB_OUTPUT
+
+      - name: 下载并解压 SDK
+        run: |
+          SDK_URL="https://downloads.immortalwrt.org/releases/24.10.2/targets/mediatek/filogic/immortalwrt-sdk-24.10.2-mediatek-filogic_gcc-13.3.0_musl.Linux-x86_64.tar.zst"
+          wget "$SDK_URL"
+          tar -I 'zstd -d' -xf immortalwrt-sdk-*.tar.zst
+          SDK_DIR=$(tar -tf immortalwrt-sdk-*.tar.zst | head -1 | cut -f1 -d'/')
+          mv "$SDK_DIR" OpenWrt-sdk
+
+      - name: 复制插件到 SDK
+        run: |
+          cd OpenWrt-sdk
+          cp -r ../plugin-source package/${{ steps.extract.outputs.PLUGIN_NAME }}
+
+      - name: 安装 feeds
+        run: |
+          cd OpenWrt-sdk
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: 预配置
+        run: |
+          cd OpenWrt-sdk
+          echo "CONFIG_PACKAGE_${{ steps.extract.outputs.PLUGIN_NAME }}=m" >> .config
+          make defconfig
+
+      - name: 编译插件
+        run: |
+          cd OpenWrt-sdk
+          make package/${{ steps.extract.outputs.PLUGIN_NAME }}/compile -j$(nproc) V=s
+
+      - name: 收集产物
+        run: |
+          cd OpenWrt-sdk
+          mkdir -p output
+          find bin/packages/ -name "*.ipk" -exec cp {} output/ \;
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.extract.outputs.PLUGIN_NAME }}-mediatek-filogic
+          path: OpenWrt-sdk/output/
