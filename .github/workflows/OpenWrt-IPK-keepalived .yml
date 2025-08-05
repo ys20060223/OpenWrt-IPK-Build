@@ -1,7 +1,21 @@
 name: Build-eBPF-Keepalived-for-NX30Pro
 
 on:
+  # 工作流调度事件 - 允许在GitHub UI中手动触发
   workflow_dispatch:
+    inputs:
+      skip_tests:
+        description: '跳过测试步骤？'
+        required: false
+        default: 'false'
+        type: boolean
+      verbose:
+        description: '启用详细输出'
+        required: false
+        default: 'false'
+        type: boolean
+  
+  # 代码推送事件 - 当代码推送到main分支时触发
   push:
     branches: [main]
 
@@ -16,11 +30,15 @@ jobs:
     timeout-minutes: 90
     
     steps:
-      - name: 清理工作空间
+      - name: 检查代码
+        uses: actions/checkout@v4
+        
+      - name: 设置工作空间
         run: |
           mkdir -p $HOME/workspace
           cd $HOME/workspace
           echo "WORKSPACE=$HOME/workspace" >> $GITHUB_ENV
+          echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE" >> $GITHUB_ENV
 
       - name: 安装基础依赖
         run: |
@@ -62,7 +80,7 @@ jobs:
         run: |
           cd ${{ env.SDK_DIR }}
           
-          # 设置安全的工作目录
+          # 设置临时目录
           export TMPDIR=${{ env.WORKSPACE }}/tmp
           mkdir -p $TMPDIR
           
@@ -152,23 +170,21 @@ EOL
       - name: 编译工具链和依赖
         run: |
           cd ${{ env.SDK_DIR }}
-          make tools/compile -j$(nproc) V=s
-          make toolchain/compile -j$(nproc) V=s
-          make package/libnl/compile -j$(nproc) V=s
-          make package/libbpf/compile -j$(nproc) V=s
-          make package/bpftool/compile -j$(nproc) V=s
+          make tools/compile -j$(nproc) V=${{ github.event.inputs.verbose && 's' || 'sc' }}
+          make toolchain/compile -j$(nproc) V=${{ github.event.inputs.verbose && 's' || 'sc' }}
+          make package/libnl/compile -j$(nproc) V=${{ github.event.inputs.verbose && 's' || 'sc' }}
+          make package/libbpf/compile -j$(nproc) V=${{ github.event.inputs.verbose && 's' || 'sc' }}
+          make package/bpftool/compile -j$(nproc) V=${{ github.event.inputs.verbose && 's' || 'sc' }}
 
       - name: 编译 Keepalived
         run: |
           cd ${{ env.SDK_DIR }}
           
-          # 进入Keepalived目录并重新生成配置
-          cd package/network/utils/keepalived
-          autoreconf -fvi
-          cd ${{ env.SDK_DIR }}
+          # 重新生成配置
+          (cd package/network/utils/keepalived && autoreconf -fvi)
           
           # 开始编译
-          make package/network/utils/keepalived/compile -j$(nproc) V=s 2>&1 | tee build.log
+          make package/network/utils/keepalived/compile -j$(nproc) V=${{ github.event.inputs.verbose && 's' || 'sc' }} 2>&1 | tee build.log
           
           # 验证BPF支持
           PKG_BUILD_DIR=$(find build_dir/target-*/keepalived-* -maxdepth 0 -type d)
@@ -177,6 +193,19 @@ EOL
           else
             echo "::error::eBPF支持未在二进制中找到"
             grep -i "bpf" build.log
+            exit 1
+          fi
+
+      - name: 运行测试 (可选)
+        if: ${{ !github.event.inputs.skip_tests }}
+        run: |
+          cd ${{ env.SDK_DIR }}
+          echo "运行基本测试..."
+          # 简单测试二进制文件是否包含BPF支持
+          if $PKG_BUILD_DIR/keepalived/keepalived --version | grep -q "BPF"; then
+            echo "✅ 版本检查通过"
+          else
+            echo "::error::二进制文件中未检测到BPF支持"
             exit 1
           fi
 
@@ -217,3 +246,4 @@ EOL
         with:
           name: keepalived-ebpf-nx30pro
           path: ${{ env.SDK_DIR }}/artifacts/*
+          retention-days: 7
