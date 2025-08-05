@@ -1,0 +1,161 @@
+name: Build-eBPF-Keepalived-Plugin
+
+on:
+  workflow_dispatch:
+    inputs:
+      PluginRepo:
+        description: 'Keepalived 插件 GitHub 仓库地址（如 https://github.com/acassen/keepalived）'
+        required: true
+        type: string
+      TargetArch:
+        description: '目标架构 (如 mediatek/filogic, x86/64 等)'
+        required: true
+        type: string
+      OpenWrtVersion:
+        description: 'OpenWrt 版本 (如 24.10.2)'
+        required: true
+        type: string
+
+env:
+  TZ: Asia/Shanghai
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:22.04
+    strategy:
+      matrix:
+        arch: ["${{ github.event.inputs.TargetArch }}"]
+        version: ["${{ github.event.inputs.OpenWrtVersion }}"]
+    
+    steps:
+      - name: 安装基础依赖
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -qq --no-install-recommends \
+            build-essential git g++ gawk gcc-multilib gettext libncurses5-dev libssl-dev \
+            python3 rsync unzip zstd zlib1g-dev jq aria2 curl ca-certificates \
+            libelf-dev clang llvm libbpf-dev libnl-3-dev libnl-genl-3-dev bison flex \
+            libcap-dev libpam-dev pkg-config libjson-c-dev libc-ares-dev libdbus-1-dev \
+            liblz4-dev liblzma-dev libsnmp-dev libmnl-dev libprotobuf-c-dev libcrypt-dev \
+            libnftnl-dev libreadline-dev libsystemd-dev liburcu-dev libxml2-dev
+
+      - name: 克隆 Keepalived 仓库
+        run: |
+          git clone --depth=1 --branch v2.2.8 ${{ github.event.inputs.PluginRepo }} keepalived-source
+          echo "KEEPALIVED_DIR=keepalived-source" >> $GITHUB_ENV
+
+      - name: 下载并解压 SDK
+        run: |
+          ARCH_PATH=$(echo ${{ matrix.arch }} | sed 's/\//\\\//g')
+          SDK_URL="https://downloads.immortalwrt.org/releases/${{ matrix.version }}/targets/${{ matrix.arch }}/immortalwrt-sdk-${{ matrix.version }}-${ARCH_PATH//\//_}_gcc-13.3.0_musl.Linux-x86_64.tar.zst"
+          echo "SDK_URL=$SDK_URL" >> $GITHUB_ENV
+          
+          aria2c -x 16 -s 16 "$SDK_URL" -o sdk.tar.zst
+          tar -I 'zstd -d' -xf sdk.tar.zst
+          SDK_DIR=$(tar -tf sdk.tar.zst | head -1 | cut -f1 -d'/')
+          mv "$SDK_DIR" OpenWrt-sdk
+          echo "SDK_DIR=OpenWrt-sdk" >> $GITHUB_ENV
+
+      - name: 配置 eBPF 编译环境
+        run: |
+          cd ${{ env.SDK_DIR }}
+          
+          # 安装 eBPF 工具链
+          ./scripts/feeds update -a
+          ./scripts/feeds install libbpf bpftool libnl
+          
+          # 创建 Keepalived 包目录
+          mkdir -p package/network/utils/keepalived
+          cp -r ../keepalived-source/* package/network/utils/keepalived/
+          
+          # 修改 Makefile 启用 eBPF
+          sed -i 's/--disable-systemd/--enable-bpf --with-bpf-lib --disable-systemd/' package/network/utils/keepalived/Makefile
+          
+          # 添加 eBPF 依赖
+          echo "DEPENDS += +libbpf +bpftool +libnl-core +libnl-genl" >> package/network/utils/keepalived/Makefile
+
+      - name: 配置内核选项
+        run: |
+          cd ${{ env.SDK_DIR }}
+          
+          # 启用内核 eBPF 支持
+          echo "CONFIG_BPF=y" >> .config
+          echo "CONFIG_BPF_SYSCALL=y" >> .config
+          echo "CONFIG_BPF_JIT=y" >> .config
+          echo "CONFIG_BPF_JIT_ALWAYS_ON=y" >> .config
+          echo "CONFIG_BPF_JIT_DEFAULT_ON=y" >> .config
+          echo "CONFIG_HAVE_EBPF_JIT=y" >> .config
+          echo "CONFIG_BPF_EVENTS=y" >> .config
+          echo "CONFIG_FTRACE_SYSCALLS=y" >> .config
+          echo "CONFIG_NET_CLS_BPF=y" >> .config
+          echo "CONFIG_NET_ACT_BPF=y" >> .config
+          echo "CONFIG_BPF_STREAM_PARSER=y" >> .config
+          echo "CONFIG_LWTUNNEL_BPF=y" >> .config
+          echo "CONFIG_DEBUG_INFO_BTF=y" >> .config
+          
+          # 启用 Keepalived 和 eBPF 相关包
+          echo "CONFIG_PACKAGE_keepalived=y" >> .config
+          echo "CONFIG_PACKAGE_libbpf=y" >> .config
+          echo "CONFIG_PACKAGE_bpftool=y" >> .config
+          echo "CONFIG_PACKAGE_libnl=y" >> .config
+          echo "CONFIG_PACKAGE_libnl-core=y" >> .config
+          echo "CONFIG_PACKAGE_libnl-genl=y" >> .config
+          
+          make defconfig
+
+      - name: 编译 Keepalived 带 eBPF 支持
+        run: |
+          cd ${{ env.SDK_DIR }}
+          
+          # 编译依赖
+          make -j$(nproc) tools/compile
+          make -j$(nproc) toolchain/compile
+          
+          # 编译 Keepalived
+          make package/network/utils/keepalived/compile -j$(nproc) V=sc
+          
+          # 验证 eBPF 支持
+          strings build_dir/target-*/keepalived-*/keepalived/keepalived | grep -q "eBPF"
+          if [ $? -eq 0 ]; then
+            echo "eBPF support verified" | tee -a build.log
+          else
+            echo "ERROR: eBPF support not found in binary" | tee -a build.log
+            exit 1
+          fi
+
+      - name: 收集产物
+        run: |
+          cd ${{ env.SDK_DIR }}
+          mkdir -p artifacts
+          
+          # 复制 Keepalived IPK
+          find bin -name "keepalived_*.ipk" -exec cp {} artifacts/ \;
+          
+          # 复制 eBPF 相关依赖
+          find bin -name "libbpf*.ipk" -exec cp {} artifacts/ \;
+          find bin -name "bpftool*.ipk" -exec cp {} artifacts/ \;
+          find bin -name "libnl*.ipk" -exec cp {} artifacts/ \;
+          
+          # 复制内核模块
+          find bin -name "kmod-*.ipk" -exec cp {} artifacts/ \;
+          
+          # 创建安装脚本
+          cat > artifacts/install.sh <<'EOL'
+          #!/bin/sh
+          opkg update
+          opkg install libbpf*.ipk
+          opkg install libnl*.ipk
+          opkg install bpftool*.ipk
+          opkg install kmod-*.ipk
+          opkg install keepalived_*.ipk
+          EOL
+          
+          chmod +x artifacts/install.sh
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: keepalived-ebpf-${{ matrix.version }}-${{ matrix.arch }}
+          path: ${{ env.SDK_DIR }}/artifacts/*
